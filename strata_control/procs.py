@@ -295,10 +295,12 @@ def end_one(record: dict, *, grace: float = 8.0) -> str:
     else:
         if is_same(pid, record["token"], record["cmd"]):
             subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)      # one PID, verified just above
+    # Wait for the process itself, not for its command line: an exiting process has none left while it still holds
+    # its memory and the GPU (an engine unpinning tens of GB takes a while), and one started now would find them taken.
     deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and is_same(pid, record["token"], record["cmd"]):
+    while time.monotonic() < deadline and start_token(pid) == record["token"]:
         time.sleep(0.1)
-    if is_same(pid, record["token"], record["cmd"]):
+    if start_token(pid) == record["token"]:
         return "stuck"
     drop_record(pid)
     return "ended"
