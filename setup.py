@@ -8789,8 +8789,8 @@ def main() -> int:
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
              *fam.get("pack_args", [])], env=env)
     # An NVIDIA GPU that shares the RAM (Jetson, DGX Spark) reads every expert in place from experts.bin when the RAM holds
-    # it with 20 GiB to spare (the engine's own rule, --uma-experts): measured on an AGX Orin with Q2_0, ready in 12 s
-    # instead of a ~590 s cache fill, and ~30 GB less RAM in use
+    # it with 20 GiB to spare (the engine's own rule, --uma-experts): measured on an AGX Orin with Q2_0, a restart is
+    # ready in 14 s instead of a ~7 min cache fill, and prompts are 10-21% faster
     in_place = bool(gpu.get("integrated")) and MODELS[model]["arena_gb"] / 1.073741824 + 20 <= ram
     if (low_ram or in_place) and not ready and not (pack / "experts.bin").exists():
         why = "for the low-RAM mode" if low_ram else "so the GPU, which shares the RAM, reads them where they lie"

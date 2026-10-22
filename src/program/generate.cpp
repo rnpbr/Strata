@@ -3023,9 +3023,10 @@ int main(int argc, char** argv) {
     (void) cudaGetLastError();
     if (o.uma_experts_ask < 0 && shared_ram_gpu) {
         // Automatic: one GPU that shares the RAM and can read a read-only mapping, a pack with experts.bin, no option
-        // that copies or moves the experts, and RAM that holds the file with 20 GiB to spare (the engine took ~10 GiB
-        // beside Q2_0's 31.6 GiB on a 64 GB AGX Orin, and the OS keeps its share).  Measured there against the copy:
-        // ready in 12 s instead of ~590 s, 30 GB less RAM, prompts 20-33% and decode ~7% faster, the same tokens.
+        // that copies or moves the experts, and RAM that holds the file with 20 GiB to spare (the engine took ~16 GB
+        // beside Q2_0's 31.6 GiB on a 64 GB AGX Orin at 128K context with images, and the OS keeps its share).  Measured
+        // there against the copy: ready in 14 s instead of ~7 min on a restart (the copy and the file do not both fit in
+        // the RAM, so its fill reads the disk every time), prompts 10-21% and decode 1-8% faster, about the same RAM.
         std::error_code ec;
         const auto bin_bytes = std::filesystem::file_size(std::filesystem::path(o.pack) / "experts.bin", ec);
         if (strata::core::UmaExperts::supported() && !o.expert_profile.empty() && !o.resident_cpu_experts &&
