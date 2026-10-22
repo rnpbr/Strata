@@ -738,10 +738,28 @@ def ask(question, choices, default, yes):
         say(f"  please answer one of: {', '.join(choices)}")
 
 
+class _KeepHeadRedirect(urllib.request.HTTPRedirectHandler):
+    """Python 3.12.3 (Ubuntu 24.04's) follows a redirect with a GET whatever the request was: a HEAD that Hugging Face
+    redirects to its CDN came back as a GET of the whole file. The method is kept here, as 3.12.15 does itself."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and req.get_method() == "HEAD":
+            new.method = "HEAD"
+        return new
+
+
+_REDIRECTS_KEEP_HEAD = False
+
+
 def _urlopen(req, timeout=None):
     """Every network request of this file goes through here: starting and serving never reach the network
     (strata_control/acquisition.py), only an explicit setup, update or install does."""
+    global _REDIRECTS_KEEP_HEAD
     acquisition.require("a download")
+    if not _REDIRECTS_KEEP_HEAD:                       # once, before the first request (urlopen stays the one entry point)
+        urllib.request.install_opener(urllib.request.build_opener(_KeepHeadRedirect))
+        _REDIRECTS_KEEP_HEAD = True
     return urllib.request.urlopen(req, timeout=timeout)
 
 
