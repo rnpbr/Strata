@@ -177,6 +177,29 @@ class CarryOver(unittest.TestCase):
             self.assertFalse((Path(d) / "strata-x.json.bak").exists())   # nothing here was replaced
 
 
+@unittest.skipIf(setup.WIN, "POSIX modes (Windows: an ACL, tests/terminal/test_private_files.py)")
+class OwnerOnly(unittest.TestCase):
+    """A run config can hold the API key: it and the copy of the one it replaces are readable by their owner only."""
+
+    def test_the_config_and_its_backup_are_0600(self):
+        import os
+        import stat
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "strata-q2_0.json"
+            old = os.umask(0o022)                       # the usual umask: a plain write would be 0644
+            try:
+                setup.write_config(path, {"exe": "x", "args": [], "api_key": "first"})
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                with unittest.mock.patch.object(setup, "say", lambda *a, **k: None), \
+                        unittest.mock.patch.object(setup, "ok", lambda *a, **k: None):
+                    setup.write_setup_config(path, {"exe": "x", "args": ["--spec", "4"], "api_key": "second"})
+                self.assertEqual(sorted(f.name for f in Path(d).iterdir()), ["strata-q2_0.json", "strata-q2_0.json.bak"])
+                for f in Path(d).iterdir():
+                    self.assertEqual(stat.S_IMODE(f.stat().st_mode), 0o600, f.name)
+            finally:
+                os.umask(old)
+
+
 class NoBrowser(unittest.TestCase):
     """#609 (#631): --no-browser keeps the chat page from opening: "open_browser": false in the run config, no --open
     on the start's server command or in run-<model>.bat/.sh.  Without the flag nothing changes."""

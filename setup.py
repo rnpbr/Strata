@@ -6024,11 +6024,23 @@ def data_folder_in_place() -> tuple:
     return dest, []
 
 
+def owner_only(path: Path) -> None:
+    """A run config can hold the server's API key (and an MCP server's token in its env): readable by its owner only
+    (0600; on Windows an ACL with the current user alone). A file system that refuses is left as it is."""
+    from strata_control import private_files
+    try:
+        private_files.restrict_to_current_user(path)
+    except (OSError, RuntimeError):
+        pass
+
+
 def write_config(path: Path, cfg: dict):
     """A run config, written whole or not at all (#459): to a temporary file first, then moved over the old one, so
-    a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind."""
+    a setup stopped half-way (a closed window, a full disk) never leaves an empty strata-*.json behind. Owner-only
+    before it takes the old one's place, so it is never readable by others, not even for a moment."""
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+    owner_only(tmp)
     atomic.replace(tmp, path)
 
 
@@ -6207,6 +6219,7 @@ def write_setup_config(cfg_path: Path, cfg: dict, source: Path | None = None, ex
         bak = cfg_path.with_name(cfg_path.name + ".bak")
         try:
             shutil.copyfile(cfg_path, bak)
+            owner_only(bak)                            # a copy of the old config: the same key, the same rights
         except OSError as e:
             warn(f"could not keep a copy of the earlier {cfg_path.name} ({e.strerror or e})")
             bak = None
