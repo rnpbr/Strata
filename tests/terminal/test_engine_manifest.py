@@ -174,6 +174,11 @@ class Arch(unittest.TestCase):
         self.assertTrue(ec.arch_covers(["sm_75", "compute_89"], ["sm_120"]), "PTX of an older generation runs on a newer card")
         self.assertFalse(ec.arch_covers(["sm_75", "compute_89"], ["sm_86"]), "PTX never runs on an older card")
         self.assertTrue(ec.arch_covers(["sm_86"], []), "cannot tell: not a refusal")
+        self.assertTrue(ec.arch_covers(["sm_86"], ["sm_87"]), "machine code runs on a newer minor version (Jetson Orin)")
+        self.assertTrue(ec.arch_covers(["sm_80"], ["sm_89"]))
+        self.assertFalse(ec.arch_covers(["sm_89"], ["sm_87"]), "machine code never runs on an older minor version")
+        self.assertFalse(ec.arch_covers(["sm_87"], ["sm_110"]), "nor across major versions")
+        self.assertFalse(ec.arch_covers(["sm_120a"], ["sm_120"]), "an arch-specific target is not counted")
 
 
 class Start(unittest.TestCase):

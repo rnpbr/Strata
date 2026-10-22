@@ -13,6 +13,7 @@ import sys
 from importlib import metadata, util
 from pathlib import Path
 
+from strata_control import nvidia_uma
 from strata_control.profiles import read_run_config
 
 
@@ -99,6 +100,9 @@ def _nvidia_cards() -> tuple[list[dict] | None, str | None]:
             if len(row) != 5 or len(cards) >= 64:
                 raise ValueError("invalid field count")
             index_raw, name, uuid, memory_raw, driver = [part.strip() for part in row]
+            unified = memory_raw == "[N/A]" and nvidia_uma.memory_fields(memory_raw) is not None
+            if unified:                                    # a Jetson / DGX Spark GPU: its memory is the RAM
+                memory_raw = str(int(nvidia_uma.ram_gb() * 1024))
             if not (re.fullmatch(r"[0-9]{1,4}", index_raw)
                     and re.fullmatch(r"[0-9]{1,9}", memory_raw)
                     and 0 <= int(index_raw) <= 1023 and int(memory_raw) > 0
@@ -107,7 +111,7 @@ def _nvidia_cards() -> tuple[list[dict] | None, str | None]:
                     and all(part.isprintable() for part in (name, uuid, driver))):
                 raise ValueError("invalid card fields")
             cards.append({"index": int(index_raw), "name": name, "uuid": uuid,
-                          "memory_mib": int(memory_raw), "driver_version": driver})
+                          "memory_mib": int(memory_raw), "driver_version": driver, **({"unified": True} if unified else {})})
     except (csv.Error, ValueError):
         return None, "nvidia-smi returned an unrecognized card list"
     if not cards or len({card["index"] for card in cards}) != len(cards):

@@ -706,8 +706,10 @@ def nvidia_driver_version() -> str | None:
 
 
 def arch_covers(archs, present: list[str]) -> bool:
-    """Whether a build with `archs` (``sm_86`` = machine code for that card, ``compute_89`` = PTX that any card of
-    that generation or newer can JIT) can run on at least one of the `present` cards (``sm_XX``)."""
+    """Whether a build with `archs` can run on at least one of the `present` cards (``sm_XX``). ``sm_86`` is machine code,
+    which runs on cards of the same major version and the same or a newer minor one (sm_86 on an 8.7 Orin or an 8.9 RTX 40,
+    never on 9.0 or 12.0); ``compute_89`` is PTX, which any card of that version or newer can JIT. Arch-specific targets
+    (``sm_90a``) run only on their own card and are not counted."""
     cards = {int(item[3:]) for item in present if item.startswith("sm_") and item[3:].isdigit()}
     if not cards:
         return True              # cannot tell: not a refusal
@@ -715,7 +717,8 @@ def arch_covers(archs, present: list[str]) -> bool:
         kind, _, number = arch.partition("_")
         if not number.isdigit():
             continue
-        if kind == "sm" and int(number) in cards:
+        built = int(number)
+        if kind == "sm" and any(card // 10 == built // 10 and card >= built for card in cards):
             return True
         if kind == "compute" and any(card >= int(number) for card in cards):
             return True

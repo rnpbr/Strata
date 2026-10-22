@@ -5097,6 +5097,70 @@ class MacTelemetry(unittest.TestCase):
             t.close()
 
 
+class JetsonTelemetry(unittest.TestCase):
+    """A Jetson's GPU: NVML names it and reads nothing else, so the readings come from a fake Tegra sysfs tree (the nvgpu
+    load, the GPU's devfreq, the gpu-thermal zone, two INA3221 monitors) and /proc/meminfo, the GPU's memory."""
+
+    class Nvml:
+        def ok(self):
+            return True
+
+        def name(self):
+            return "Orin (nvgpu)"
+
+    def tree(self, d):
+        root = Path(d)
+        (root / "devices/platform/gpu.0").mkdir(parents=True)
+        (root / "devices/platform/gpu.0/load").write_text("734\n")
+        freq = root / "class/devfreq/17000000.gpu"
+        freq.mkdir(parents=True)
+        (freq / "cur_freq").write_text("1300500000\n")
+        (root / "class/devfreq/bwmgr").mkdir()
+        for n, (kind, temp) in enumerate((("cpu-thermal", "52000"), ("gpu-thermal", "49718"))):
+            z = root / f"class/thermal/thermal_zone{n}"
+            z.mkdir(parents=True)
+            (z / "type").write_text(kind + "\n")
+            (z / "temp").write_text(temp + "\n")
+        for h, rails in (("hwmon6", ((1, "VDD_GPU_SOC", 19976, 1500), (2, "VDD_CPU_CV", 19976, 600))),
+                         ("hwmon7", ((2, "VDDQ_VDD2_1V8AO", 5064, 380),))):
+            hw = root / "class/hwmon" / h
+            hw.mkdir(parents=True)
+            (hw / "name").write_text("ina3221\n")
+            for ch, label, mv, ma in rails:
+                (hw / f"in{ch}_label").write_text(label + "\n")
+                (hw / f"in{ch}_input").write_text(f"{mv}\n")
+                (hw / f"curr{ch}_input").write_text(f"{ma}\n")
+            (hw / "in7_label").write_text("sum of shunt voltages\n")      # no current file: not a rail
+            (hw / "in7_input").write_text("1800\n")
+        meminfo = root / "meminfo"
+        meminfo.write_text("MemTotal:       64386068 kB\nMemFree:        40000000 kB\nMemAvailable:   48000000 kB\n")
+        return root, meminfo
+
+    def test_readings(self):
+        from serve import telemetry
+        with tempfile.TemporaryDirectory() as d:
+            root, meminfo = self.tree(d)
+            self.assertTrue(telemetry._Tegra.present(str(root)))
+            g = telemetry._Tegra(0, sysfs=str(root), meminfo=str(meminfo), nvml=self.Nvml())
+            self.assertTrue(g.ok())
+            self.assertEqual(g.name(), "Orin (nvgpu)")
+            r = g.read()
+        self.assertEqual(r["util"], 73)                                    # 734 tenths of a percent
+        self.assertEqual((r["mem_total"], r["mem_used"]), (64386068 * 1024, (64386068 - 48000000) * 1024))
+        self.assertEqual((r["temp"], r["mhz"]), (49, 1300))
+        self.assertAlmostEqual(r["power"], 19.976 * 1.5)
+        self.assertEqual(sorted(r["rails"]), ["VDDQ_VDD2_1V8AO", "VDD_CPU_CV", "VDD_GPU_SOC"])
+        self.assertAlmostEqual(r["rails"]["VDDQ_VDD2_1V8AO"], 5.064 * 0.38)
+        self.assertIsNone(r["pcie_gen"])
+
+    def test_a_second_gpu_and_other_machines_get_nothing_from_it(self):
+        from serve import telemetry
+        with tempfile.TemporaryDirectory() as d:
+            root, meminfo = self.tree(d)
+            self.assertFalse(telemetry._Tegra(1, sysfs=str(root), meminfo=str(meminfo), nvml=self.Nvml()).ok())
+            self.assertFalse(telemetry._Tegra.present(str(Path(d) / "elsewhere")))
+
+
 class TelemetryNoDisks(unittest.TestCase):
     """psutil.disk_io_counters() returns None where it finds no disk (a gVisor container; Windows with its disk counters
     off): the sampler goes on without a disk reading instead of its thread ending at the first sample, which left

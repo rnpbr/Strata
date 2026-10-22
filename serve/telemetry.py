@@ -345,13 +345,104 @@ class _Metal:
         return out
 
 
+# ------------------------------------------------------------------------------------------------ Jetson (Tegra sysfs)
+class _Tegra:
+    """A Jetson's integrated GPU, with _Nvml's interface. NVML names it but reads nothing else there, so the load and
+    the clock come from the nvgpu driver's sysfs files, the memory is the system's (the GPU has none of its own), the
+    temperature is the gpu-thermal zone and the power the INA3221 monitor's VDD_GPU_SOC rail, which the GPU shares
+    with the SoC. `rails` gives every rail the monitors measure, in watts, by the board's own names."""
+    note = "the GPU shares the RAM, so the memory shown is the system's; the power is the GPU and SoC rail"
+    GPU_RAIL = "VDD_GPU_SOC"
+
+    def __init__(self, index=0, sysfs=SYSFS, meminfo="/proc/meminfo", nvml=None):
+        self.index = index
+        self.meminfo = meminfo
+        self.load = next((p for p in (os.path.join(sysfs, "devices/platform/gpu.0/load"),
+                                      os.path.join(sysfs, "devices/platform/bus@0/17000000.gpu/load")) if os.path.isfile(p)), None)
+        dev = os.path.join(sysfs, "class/devfreq")
+        self.devfreq = next((os.path.join(dev, d) for d in sorted(os.listdir(dev)) if d.endswith(".gpu")), None) \
+            if os.path.isdir(dev) else None
+        self.thermal = None
+        zones = os.path.join(sysfs, "class/thermal")
+        for z in sorted(os.listdir(zones)) if os.path.isdir(zones) else []:
+            if self._text(os.path.join(zones, z, "type")) == "gpu-thermal":
+                self.thermal = os.path.join(zones, z, "temp")
+                break
+        self.rails = {}                                    # label -> (millivolt file, milliampere file)
+        hw = os.path.join(sysfs, "class/hwmon")
+        for h in sorted(os.listdir(hw)) if os.path.isdir(hw) else []:
+            d = os.path.join(hw, h)
+            if self._text(os.path.join(d, "name")) != "ina3221":
+                continue
+            for f in sorted(os.listdir(d)):
+                m = re.fullmatch(r"in(\d+)_label", f)
+                if m and os.path.isfile(os.path.join(d, f"curr{m.group(1)}_input")):
+                    label = self._text(os.path.join(d, f))
+                    if label and label not in self.rails:
+                        self.rails[label] = (os.path.join(d, f"in{m.group(1)}_input"), os.path.join(d, f"curr{m.group(1)}_input"))
+        self._nvml = nvml
+
+    @staticmethod
+    def present(sysfs=SYSFS):
+        return os.path.isfile(os.path.join(sysfs, "devices/platform/gpu.0/load")) or \
+            os.path.isfile(os.path.join(sysfs, "devices/platform/bus@0/17000000.gpu/load"))
+
+    @staticmethod
+    def _text(path):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                return f.read().strip()
+        except OSError:
+            return None
+
+    def _int(self, path):
+        t = self._text(path) if path else None
+        return int(t) if t is not None and t.lstrip("-").isdigit() else None
+
+    def ok(self):
+        return self.index == 0 and self.load is not None
+
+    def name(self):
+        nvml = self._nvml if self._nvml is not None else _Nvml(self.index)
+        self._nvml = nvml
+        return (nvml.name() if nvml.ok() else None) or "NVIDIA Jetson GPU"
+
+    def _watts(self, label):
+        mv, ma = (self._int(p) for p in self.rails[label])
+        return mv * ma / 1e6 if mv is not None and ma is not None else None
+
+    def read(self):
+        out = {"pcie_gen": None, "pcie_gen_max": None, "pcie_width": None, "pcie_rx_mb": None, "pcie_tx_mb": None,
+               "power_limit": None}
+        load = self._int(self.load)
+        out["util"] = load // 10 if load is not None else None          # the driver counts in tenths of a percent
+        mem = {}
+        for line in (self._text(self.meminfo) or "").splitlines():
+            name, _, rest = line.partition(":")
+            if name in ("MemTotal", "MemAvailable") and rest.split() and rest.split()[0].isdigit():
+                mem[name] = int(rest.split()[0]) * 1024
+        if len(mem) == 2:
+            out["mem_total"], out["mem_used"] = mem["MemTotal"], mem["MemTotal"] - mem["MemAvailable"]
+        temp = self._int(self.thermal)
+        out["temp"] = temp // 1000 if temp is not None else None
+        out["power"] = self._watts(self.GPU_RAIL) if self.GPU_RAIL in self.rails else None
+        out["rails"] = {label: self._watts(label) for label in self.rails}
+        hz = self._int(os.path.join(self.devfreq, "cur_freq")) if self.devfreq else None
+        out["mhz"] = hz // 1_000_000 if hz is not None else None
+        return out
+
+
 def gpu_reader(index=0, amd=False):
-    """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), or IOKit's
-    IOAccelerator registry on macOS (Metal backend).  `amd` comes first: no Mac runs the HIP backend, and the
-    tests' AMD trees are read on a Mac too."""
+    """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), IOKit's
+    IOAccelerator registry on macOS (Metal backend), or a Jetson's sysfs files (NVML reads nothing there but the
+    name).  `amd` comes first: no Mac runs the HIP backend, and the tests' AMD trees are read on a Mac too."""
     if amd:
         return _Amd(index)
-    return _Metal(index) if sys.platform == "darwin" else _Nvml(index)
+    if sys.platform == "darwin":
+        return _Metal(index)
+    if sys.platform.startswith("linux") and _Tegra.present():
+        return _Tegra(index)
+    return _Nvml(index)
 
 
 _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"

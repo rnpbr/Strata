@@ -66,6 +66,7 @@ from strata_control import acquisition
 from strata_control import atomic
 from strata_control import draft_layer
 from strata_control.discovery import in_trash
+from strata_control import nvidia_uma
 from strata_control import user_args
 
 ROOT = Path(__file__).resolve().parent
@@ -1200,15 +1201,30 @@ def cpu_info():
         avx512 = bool(pf(41)) and _cpuid_avx512_full()
     else:
         try:
-            txt = open("/proc/cpuinfo").read()
-            flags = set(re.search(r"^flags\s*:\s*(.*)$", txt, re.M).group(1).split())
+            with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as f:
+                txt = f.read()
+            m = re.search(r"^flags\s*:\s*(.*)$", txt, re.M)      # x86; an Arm CPU lists "Features" instead
+            flags = set(m.group(1).split()) if m else set()
             avx2 = "avx2" in flags
             avx512 = {"avx512f", "avx512bw", "avx512vl", "avx512_vnni", "avx512vbmi"} <= flags
             m = re.search(r"^model name\s*:\s*(.*)$", txt, re.M)
-            name = m.group(1) if m else name
+            name = m.group(1) if m else arm_cpu_name() or name
         except OSError:
             pass
     return name, avx2, avx512
+
+
+def arm_host() -> bool:
+    """A 64-bit Arm machine (Jetson, DGX Spark, an Arm server): the engine's CPU experts run on NEON there, not AVX."""
+    return platform.machine().lower() in ("aarch64", "arm64")
+
+
+def arm_cpu_name() -> str:
+    """lscpu's name for an Arm core ("Cortex-A78AE"), which /proc/cpuinfo does not give; "" off Arm or without lscpu."""
+    if not arm_host():
+        return ""
+    m = re.search(r"^Model name:\s*(.+)$", out(["lscpu"]), re.M)
+    return m.group(1).strip() if m else ""
 
 
 def _cpuid_floor() -> str:
@@ -1239,7 +1255,7 @@ def cpu_floor(avx2: bool) -> str:
     forced = os.environ.get("STRATA_ISA_FLOOR", "").strip().lower()
     if forced in ("avx", "none"):
         return forced
-    if avx2:
+    if avx2 or arm_host():   # Arm: the build targets the machine's own NEON, there is no older x86 floor to pick
         return ""
     if WIN:
         f = _cpuid_floor()
@@ -1323,8 +1339,10 @@ def gpus():
     for line in s.strip().splitlines():
         try:
             idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0, "arch": cc.replace(".", ""),
-                          "driver": drv})
+            memory = nvidia_uma.memory_fields(mem)   # a Jetson / DGX Spark GPU reports [N/A]: it shares the RAM
+            if memory is None:
+                continue
+            found.append({"index": int(idx), "name": name, **memory, "arch": cc.replace(".", ""), "driver": drv})
         except ValueError:
             continue
     return found
@@ -5202,6 +5220,20 @@ def cuda_apt_repo(osr):
     return repo if repo in ("ubuntu2204", "ubuntu2404", "debian12", "debian13") else None
 
 
+def build_jobs(meminfo: str = "/proc/meminfo") -> int:
+    """Compile jobs: half the logical CPUs as before, and on Linux at most one per 2 GiB of the RAM available beyond 2 GiB -
+    an nvcc job takes 1-2 GiB, and on a Jetson the GPU's memory is that same RAM."""
+    jobs = max(2, (os.cpu_count() or 4) // 2)
+    if WIN:
+        return jobs
+    try:
+        with open(meminfo, encoding="ascii", errors="replace") as f:
+            kb = next(int(line.split()[1]) for line in f if line.startswith("MemAvailable:"))
+    except (OSError, ValueError, IndexError, StopIteration):
+        return jobs
+    return max(1, min(jobs, (kb * 1024 - (2 << 30)) // (2 << 30)))
+
+
 def install_build_tools(gpu, yes):
     """The compiler and the CUDA toolkit, installed for the user (asks once).  Returns (nvcc, vcvars)."""
     acquisition.require("the compiler and CUDA toolkit")
@@ -5260,13 +5292,18 @@ def install_build_tools(gpu, yes):
         if not have_cc:
             run(["sudo", "apt-get", "install", "-y", "build-essential"])
         if nvcc is None or cuda_v < need_cuda:
+            from strata_control import nvidia_uma
+            if nvidia_uma.tegra_soc() is not None:        # a Jetson: the toolkit is JetPack's, built for its driver
+                fail("a Jetson's CUDA Toolkit comes with JetPack, not from NVIDIA's desktop repository",
+                     "install it with: sudo apt-get install nvidia-jetpack (or cuda-toolkit-13-0 alone), then run it again")
             osr = dict(line.split("=", 1) for line in open("/etc/os-release").read().splitlines() if "=" in line)
             repo = cuda_apt_repo(osr)
             if repo is None:
                 fail("the CUDA Toolkit can be installed automatically on Ubuntu 22.04 / 24.04 and Debian 12 / 13 only",
                      "install it from https://developer.nvidia.com/cuda-downloads and run it again")
             deb = Path("/tmp/cuda-keyring.deb")
-            download(f"https://developer.download.nvidia.com/compute/cuda/repos/{repo}/x86_64/cuda-keyring_1.1-1_all.deb",
+            cpu = "sbsa" if arm_host() else "x86_64"      # an Arm server (DGX Spark): NVIDIA's "sbsa" repository
+            download(f"https://developer.download.nvidia.com/compute/cuda/repos/{repo}/{cpu}/cuda-keyring_1.1-1_all.deb",
                      deb, "CUDA repository key")
             run(["sudo", "dpkg", "-i", str(deb)])
             run(["sudo", "apt-get", "update"])
@@ -5310,7 +5347,7 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     cmake, ninja = ensure_build_tools()
     conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
             "-DCMAKE_BUILD_TYPE=Release", *defs]
-    build = [cmake, "--build", str(bdir), "--target", target, "-j", str(max(2, (os.cpu_count() or 4) // 2))]
+    build = [cmake, "--build", str(bdir), "--target", target, "-j", str(build_jobs())]
     # A failed build is tried once more: CUDA 13.0's ptxas now and then fails to parse a PTX file it just wrote, and
     # the same command then gets past it (issue #45); a second attempt only compiles what is still missing.
     if WIN:
@@ -8213,7 +8250,8 @@ def main() -> int:
     pf = page_file_gb()
     if pf is not None and pf < 4:
         warn(page_file_advice(pf, page_file_setting()))
-    ok(f"CPU: {cpu} ({'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2'})")
+    ok(f"CPU: {cpu} (" + ("64-bit Arm, NEON" if arm_host() else 'AVX-512' if avx512 else 'AVX2' if avx2 else 'no AVX2')
+       + ")")
     link = None if hip else pcie_link(int(gpu.get("index", 0)))
     if link is not None:
         line, problem = pcie_lines(link)
@@ -8223,7 +8261,7 @@ def main() -> int:
     floor = cpu_floor(avx2)
     if floor == "unsupported":
         fail("this CPU has neither AVX2 nor SSE4.2; Strata needs at least SSE4.2 (Intel Nehalem, 2008, or newer)")
-    if not avx2:
+    if not avx2 and not arm_host():
         # #394 #595 #623: the ready-made engine is AVX2; an older CPU gets one compiled here, whose CPU experts run on
         # ggml-cpu's kernels for this CPU.  Experimental: measured only on newer CPUs with the older path forced, and by
         # users on a few Xeons.  A warning, not a stop.
@@ -8728,8 +8766,13 @@ def main() -> int:
         # (UD-Q4_K_XL: --compat-bf16 - its Q8_0 hyper-connection projections become BF16, the form the engine reads)
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
              *fam.get("pack_args", [])], env=env)
-    if low_ram and not ready and not (pack / "experts.bin").exists():
-        say(f"  Writing the experts into one file for the low-RAM mode (one time, {MODELS[model]['arena_gb']:.0f} GB) ...")
+    # An NVIDIA GPU that shares the RAM (Jetson, DGX Spark) reads every expert in place from experts.bin when the RAM holds
+    # it with 20 GiB to spare (the engine's own rule, --uma-experts): measured on an AGX Orin with Q2_0, ready in 12 s
+    # instead of a ~590 s cache fill, and ~30 GB less RAM in use
+    in_place = bool(gpu.get("integrated")) and MODELS[model]["arena_gb"] / 1.073741824 + 20 <= ram
+    if (low_ram or in_place) and not ready and not (pack / "experts.bin").exists():
+        why = "for the low-RAM mode" if low_ram else "so the GPU, which shares the RAM, reads them where they lie"
+        say(f"  Writing the experts into one file {why} (one time, {MODELS[model]['arena_gb']:.0f} GB) ...")
         run([sys.executable, str(ROOT / "tools" / "iq_pack.py"), "--gguf", str(shards[0]), "--out", str(pack),
              "--experts-bin", *fam.get("pack_args", [])], env=env)       # #3193: Gyro needs --compat-bf16 here too
     ok(f"model prepared: {pack}")

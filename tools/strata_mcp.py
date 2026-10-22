@@ -1120,7 +1120,9 @@ class Strata:
         tier = next(((f, n) for lo, f, n in MEMORY_TIERS if ram + tvram - TIER_SYSTEM_RESERVE_GB >= lo), None)
         if tier and tier[1] in models and tier[0] in families:
             fam, model = tier
-            total = f"{ram:.0f} GB of RAM + {tvram:.0f} GB of VRAM = {ram + tvram:.0f} GB, {TIER_SYSTEM_RESERVE_GB:.0f} GB of it kept for Windows and the system"
+            kept = f"{TIER_SYSTEM_RESERVE_GB:.0f} GB of it kept for {'Windows and the system' if WIN else 'the system'}"
+            total = (f"{ram:.0f} GB of memory the processor and the GPU share, {kept}" if best.get("uma") and not tvram
+                     else f"{ram:.0f} GB of RAM + {tvram:.0f} GB of VRAM = {ram + tvram:.0f} GB, {kept}")
             if model == "IQ2_XS":
                 why = (f"{total}, the 40 GB tier: Swift 1.5's IQ2_XS (thinks for a shorter time)"
                        + ("; Gyro-M (35 GB) is the other choice there, close to IQ3_XXS in quality but 16-21% slower at "
@@ -1591,14 +1593,17 @@ def own_ram_gb() -> float:
 
 
 def own_nvidia_gpus() -> list:
+    from strata_control import nvidia_uma
     s = run_quiet(["nvidia-smi", "--query-gpu=index,name,memory.total,compute_cap,driver_version",
                    "--format=csv,noheader,nounits"])
     found = []
     for line in s.strip().splitlines():
         try:
             idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0,
-                          "arch": cc.replace(".", ""), "driver": drv})
+            memory = nvidia_uma.memory_fields(mem)   # a Jetson / DGX Spark GPU reports [N/A]: it shares the RAM
+            if memory is None:
+                continue
+            found.append({"index": int(idx), "name": name, **memory, "arch": cc.replace(".", ""), "driver": drv})
         except ValueError:
             continue
     return found

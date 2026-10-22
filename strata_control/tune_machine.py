@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from strata_control import nvidia_uma
+
 MIB = 1024 * 1024
 
 
@@ -87,9 +89,15 @@ def gpus() -> list[dict[str, Any]]:
             parts = [p.strip() for p in line.split(",")]
             if len(parts) >= 5:
                 try:
+                    total, used = int(float(parts[2])), int(float(parts[3]))
+                except ValueError:
+                    memory = nvidia_uma.memory_fields(parts[2])   # a Jetson / DGX Spark GPU: its memory is the RAM
+                    if memory is None or not memory.get("uma"):
+                        continue
+                    total, used = int(memory["vram_gb"] * 1024), nvidia_uma.used_mib()
+                try:
                     out.append({"vendor": "nvidia", "index": int(parts[0]), "name": parts[1],
-                                "vram_total_mib": int(float(parts[2])), "vram_used_mib": int(float(parts[3])),
-                                "driver": parts[4]})
+                                "vram_total_mib": total, "vram_used_mib": used, "driver": parts[4]})
                 except ValueError:
                     continue
     if not out and sys.platform.startswith("linux"):

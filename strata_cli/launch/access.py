@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import socket
@@ -209,10 +210,13 @@ def tailscale_status() -> dict:
     return out
 
 
+_DEB_ARCH = "arm64" if platform.machine().lower() in ("aarch64", "arm64") else "amd64"
+
 INSTALL_HELP = {
     "cloudflared": {
         "linux": "Install cloudflared: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/ "
-                 "(on Debian/Ubuntu download the .deb and run: sudo dpkg -i cloudflared-linux-amd64.deb). No account is needed for a quick tunnel.",
+                 f"(on Debian/Ubuntu download the .deb and run: sudo dpkg -i cloudflared-linux-{_DEB_ARCH}.deb). "
+                 "No account is needed for a quick tunnel.",
         "windows": "Install cloudflared: winget install --id Cloudflare.cloudflared  (no account is needed for a quick tunnel).",
         "darwin": "Install cloudflared: brew install cloudflared  (no account is needed for a quick tunnel).",
     },

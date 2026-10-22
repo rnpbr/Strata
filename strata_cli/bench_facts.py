@@ -18,6 +18,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from strata_control import nvidia_uma
+
 ROOT = Path(__file__).resolve().parents[1]
 LOOPBACK = frozenset({"localhost", "127.0.0.1", "::1"})
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
@@ -161,9 +163,12 @@ def nvidia_gpus() -> tuple[list[dict], str | None, str | None]:
             except ValueError:
                 return None
         mib, watts = number(part[2]), number(part[3])
+        kind = "dedicated"
+        if mib is None and (shared := nvidia_uma.memory_fields(part[2])) and shared.get("uma"):
+            mib, kind = shared["vram_gb"] * 1024, "shared"   # a Jetson / DGX Spark GPU: its memory is the RAM
         cards.append({"device_index": int(part[0]), "name": part[1],
                       "memory_bytes": int(mib * 1024 * 1024) if mib else None,
-                      "memory_kind": "dedicated", "power_limit_w": watts, "driver": part[4]})
+                      "memory_kind": kind, "power_limit_w": watts, "driver": part[4]})
     cuda = None
     if cards:
         # driver 615 prints "CUDA UMD Version: 13.4" where older drivers print "CUDA Version: 13.0"
