@@ -8233,7 +8233,9 @@ def main() -> int:
         gpu["archs"] = sorted({x["arch"] for x in chosen})  # the engine needs code for every one of them
         if multi:
             ok("GPUs: " + " + ".join(gpu_name(x) for x in chosen) + " together (the model's layers are split across them)")
-        ok(f"GPU: {gpu['name']}, {gpu['vram_gb']:.1f} GB VRAM, compute capability {cc(gpu)}, driver {gpu['driver']}")
+        memory = f"{gpu['vram_gb']:.1f} GB of RAM it shares with the CPU" if gpu.get("integrated") else \
+            f"{gpu['vram_gb']:.1f} GB VRAM"
+        ok(f"GPU: {gpu['name']}, {memory}, compute capability {cc(gpu)}, driver {gpu['driver']}")
         cuda_tk, why = cuda_choice(gpu["archs"], a.cuda)   # one engine per model: its oldest card decides
         if why:
             (warn if cuda_tk == 13 or str(a.cuda) == "12" else ok)(f"CUDA {cuda_tk}: {why}")
@@ -8298,11 +8300,13 @@ def main() -> int:
     if a.check:
         say()
         any_fits = False
+        own_vram = 0.0 if gpu.get("integrated") else gpu["vram_gb"]   # a Jetson / DGX Spark GPU's memory is the RAM
         for m, d in MODELS.items():
-            have_gb = mem_have(m, ram, gpu["vram_gb"])
+            have_gb = mem_have(m, ram, own_vram)
             verdict = "fits" if have_gb >= d["ram_gb"] else "tight" if have_gb >= d["ram_gb"] - 8 else "does not fit"
             if d.get("mem_total"):          # Gyro: VRAM + RAM together; the rest of the download is read from the SSD
-                verdict += f" ({ram:.0f} GB RAM + {gpu['vram_gb']:.0f} GB VRAM)"
+                verdict += f" ({ram:.0f} GB RAM" + (" shared with the GPU)" if gpu.get("integrated") else
+                                                    f" + {gpu['vram_gb']:.0f} GB VRAM)")
             if d.get("budget") and not unsloth_budget(m, ram, gpu):     # Phase 2: all of them in RAM
                 verdict = ("EXPERIMENTAL, " if d.get("experimental") else "") + "fits (all of its experts in RAM)"
             elif d.get("budget"):
@@ -8456,9 +8460,10 @@ def main() -> int:
     # (the low-RAM mode's variant is decided once the context is known, below; on several GPUs it is the mapped one
     # before RESIDENT_SPLIT_ENGINE, #642)
     if MODELS[model].get("mem_total"):
-        if mem_have(model, ram, gpu["vram_gb"]) < MODELS[model]["ram_gb"]:   # recommend, never force: a warning
+        own_vram = 0.0 if gpu.get("integrated") else gpu["vram_gb"]   # a Jetson / DGX Spark GPU's memory is the RAM
+        if mem_have(model, ram, own_vram) < MODELS[model]["ram_gb"]:   # recommend, never force: a warning
             warn(f"{model} needs {MODELS[model]['ram_gb']} GB of VRAM and RAM together; this PC has "
-                 f"{mem_have(model, ram, gpu['vram_gb']):.0f} GB ({ram:.0f} GB RAM + {gpu['vram_gb']:.0f} GB VRAM): it "
+                 f"{mem_have(model, ram, own_vram):.0f} GB ({ram:.0f} GB RAM + {own_vram:.0f} GB VRAM): it "
                  "may be slow, run out of memory or not start")
     elif not low_ram and budget is None and ram < MODELS[model]["ram_gb"] - 4:
         confirm_paging(model, ram, a.low_ram, a.yes, bool(a.model))
