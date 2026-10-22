@@ -21,6 +21,15 @@ from strata_control import acquisition, components, engine_component as ec
 WINDOWS = os.name == "nt"
 HERE = components.host_platform()
 EXE = "strata.exe" if WINDOWS else "strata"
+# AMD engines exist for x86-64 only. On an Arm host (a Jetson) the AMD tests resolve as on a Linux x86-64 PC.
+HIP_HERE = HERE if ec.backend_supported("hip", HERE)[0] else "linux-x86_64"
+
+
+def as_hip_pc(case: unittest.TestCase) -> None:
+    """For the rest of `case`, engine resolution sees HIP_HERE as this PC's platform."""
+    patch = mock.patch.object(ec, "host_platform", return_value=HIP_HERE)
+    patch.start()
+    case.addCleanup(patch.stop)
 
 
 def make_package(root: Path, *, version="0.1.45", platform=None, backend="cuda", archs=(), min_runtime=None,
@@ -117,7 +126,8 @@ class Resolution(unittest.TestCase):
         self.assertIn(f"is for {other}", str(caught.exception))
 
     def test_another_backend_is_refused_with_the_reason(self):
-        make_package(self.root, backend="hip")
+        as_hip_pc(self)
+        make_package(self.root, platform=HIP_HERE, backend="hip")
         with self.assertRaises(ec.EngineMissing) as caught:
             ec.resolve(self.root, backend="cuda")
         self.assertIn("is a hip engine, this PC needs cuda", str(caught.exception))
@@ -300,7 +310,8 @@ class WrongCardFamily(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         self.root = Path(self.dir.name)
         self.addCleanup(self.dir.cleanup)
-        self.folder = make_package(self.root, backend="hip", archs=("gfx1200", "gfx1201"))
+        as_hip_pc(self)
+        self.folder = make_package(self.root, platform=HIP_HERE, backend="hip", archs=("gfx1200", "gfx1201"))
 
     def test_an_rx7000_card_with_the_rx9000_build_is_told_to_ask_for_the_other_build(self):
         with mock.patch.object(ec, "hip_archs_present", return_value=["gfx1100"]):
@@ -330,6 +341,7 @@ class Rx6000Package(unittest.TestCase):
         self.dir = tempfile.TemporaryDirectory()
         self.root = Path(self.dir.name)
         self.addCleanup(self.dir.cleanup)
+        as_hip_pc(self)
 
     def kfd(self, *versions):
         nodes = Path(self.dir.name) / "kfd"
@@ -343,7 +355,7 @@ class Rx6000Package(unittest.TestCase):
         self.assertEqual(ec.hip_archs_present(self.kfd(100300, 100301, 110000, 120001)), ["gfx1030", "gfx1031", "gfx1100", "gfx1201"])
 
     def test_an_rx6000_card_finds_the_rx6000_package_and_an_rx7000_card_does_not(self):
-        make_package(self.root, backend="hip", archs=("gfx1030", "gfx1031"))
+        make_package(self.root, platform=HIP_HERE, backend="hip", archs=("gfx1030", "gfx1031"))
         with mock.patch.object(ec, "hip_archs_present", return_value=["gfx1030"]):
             self.assertEqual(ec.resolve(self.root, backend="hip", runtime="1").hip_archs, ("gfx1030", "gfx1031"))
             self.assertIsNone(ec.status(self.root, backend="hip")["notice"])
@@ -354,7 +366,7 @@ class Rx6000Package(unittest.TestCase):
         self.assertIn("Ask for the RX 7000 build.", str(caught.exception))
 
     def test_the_rx9000_package_on_an_rx6000_card_names_a_build_that_exists(self):
-        make_package(self.root, backend="hip", archs=("gfx1200", "gfx1201"))
+        make_package(self.root, platform=HIP_HERE, backend="hip", archs=("gfx1200", "gfx1201"))
         with mock.patch.object(ec, "hip_archs_present", return_value=["gfx1030"]):
             with self.assertRaises(ec.EngineMissing) as caught:
                 ec.resolve(self.root, backend="hip", runtime="1")

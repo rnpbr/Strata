@@ -19,6 +19,13 @@ import setup  # noqa: E402
 
 
 class AptRepo(unittest.TestCase):
+    def setUp(self):
+        # a desktop x86 PC, whatever runs the test (a Jetson's device tree would send it to JetPack, tools/test_setup_arm.py)
+        from strata_control import nvidia_uma
+        for p in (mock.patch.object(nvidia_uma, "tegra_soc", lambda: None), mock.patch.object(setup, "arm_host", lambda: False)):
+            p.start()
+            self.addCleanup(p.stop)
+
     def test_known_and_unknown_distros(self):
         for osr, want in ({"ID": "ubuntu", "VERSION_ID": '"22.04"'}, "ubuntu2204"), \
                           ({"ID": "ubuntu", "VERSION_ID": '"24.04"'}, "ubuntu2404"), \

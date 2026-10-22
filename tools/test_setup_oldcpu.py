@@ -28,8 +28,11 @@ class FloorTest(unittest.TestCase):
     def setUp(self):
         self.env = mock.patch.dict(os.environ, {"STRATA_ISA_FLOOR": ""})
         self.env.start()
+        self.x86 = mock.patch.object(setup, "arm_host", lambda: False)   # the floors are x86's, whatever runs the test
+        self.x86.start()
 
     def tearDown(self):
+        self.x86.stop()
         self.env.stop()
 
     def test_avx2_cpu_gets_the_normal_engine(self):

@@ -101,10 +101,11 @@ class HipPackageForAnotherCard(unittest.TestCase):
 
     def test_a_package_without_the_cards_arch_is_not_chosen_and_one_with_it_is(self):
         from strata_control import engine_component as ec
-        from tests.terminal.test_engine_component import make_package, rewrite
+        from tests.terminal.test_engine_component import HIP_HERE, as_hip_pc, make_package, rewrite
+        as_hip_pc(self)
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            folder = make_package(root, backend="hip")
+            folder = make_package(root, platform=HIP_HERE, backend="hip")
             rewrite(folder, schema_version=2, archs=["gfx1200", "gfx1201"], build_id="test")
             with mock.patch.object(ec, "hip_archs_present", return_value=["gfx1103"]):
                 with self.assertRaises(ec.EngineMissing) as ctx:
