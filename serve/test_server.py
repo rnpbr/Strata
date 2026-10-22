@@ -5216,6 +5216,27 @@ class JetsonTelemetry(unittest.TestCase):
             self.assertFalse(telemetry._Tegra.present(str(Path(d) / "elsewhere")))
 
 
+class AnswerEnergy(unittest.TestCase):
+    """The mean board power over an answer's decode (the telemetry's last decode_ms of one-second samples) and its tokens
+    per joule: the figures the answer's timings, the requests table and the Monitor share."""
+
+    def service(self, samples):
+        import collections
+        from serve.server import Service
+        tel = SimpleNamespace(lock=threading.Lock(), hist={"gpu_power_total": collections.deque(samples)})
+        return Service.answer_energy.__get__(SimpleNamespace(telemetry=tel))
+
+    def test_the_answers_own_seconds(self):
+        energy = self.service([10.0, 10.0, 40.0, 42.0, 38.0])        # idle, then a 3 s answer
+        self.assertEqual(energy(3000, 90), {"power_w": 40.0, "tok_per_j": 0.75})
+
+    def test_nothing_to_say(self):
+        self.assertEqual(self.service([])(3000, 90), {})                 # no power readings (not a Jetson)
+        self.assertEqual(self.service([40.0])(0, 0), {})                 # no decode
+        from serve.server import Service
+        self.assertEqual(Service.answer_energy(SimpleNamespace(telemetry=None), 3000, 90), {})
+
+
 class TelemetryNoDisks(unittest.TestCase):
     """psutil.disk_io_counters() returns None where it finds no disk (a gVisor container; Windows with its disk counters
     off): the sampler goes on without a disk reading instead of its thread ending at the first sample, which left

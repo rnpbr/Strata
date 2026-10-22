@@ -4491,6 +4491,21 @@ class Service:
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
 
+    def answer_energy(self, decode_ms, generated) -> dict:
+        """A board that measures its whole power (a Jetson): the mean of those watts over the answer's decode, the last
+        decode_ms of the telemetry's one-second samples, and the tokens per joule at the engine's decode speed. {}
+        elsewhere, or for an answer too short to sample."""
+        tel = getattr(self, "telemetry", None)
+        if tel is None or not decode_ms or not generated:
+            return {}
+        with tel.lock:
+            hist = list(tel.hist.get("gpu_power_total") or ())
+        watts = [w for w in hist[-max(1, round(decode_ms / 1000)):] if w]
+        if not watts:
+            return {}
+        mean = sum(watts) / len(watts)
+        return {"power_w": round(mean, 1), "tok_per_j": round(generated / (decode_ms / 1000) / mean, 2)}
+
     def prometheus(self) -> str:
         """GET /metrics/prometheus: the totals and what is running in Prometheus' text format, under llama-server's
         metric names (llamacpp:*) so its dashboards work unchanged; the drafts and requests as strata:*."""
@@ -5315,6 +5330,7 @@ class Service:
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
                             seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
+                            energy = self.answer_energy(last.get("decode_ms"), last.get("generated"))
                             self.history.append({
                                 "id": request_id,
                                 "projection": (sampling or {}).get("experimental_speed_projection") is not False
@@ -5334,7 +5350,7 @@ class Service:
                                 "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
                                 # #457: the speculative drafts from the DONE line (None: the engine did not say)
                                 "drafts_offered": last.get("drafts_offered"),
-                                "drafts_accepted": last.get("drafts_accepted")})
+                                "drafts_accepted": last.get("drafts_accepted"), **energy})
                             t = self.totals
                             t["requests"] += 1
                             t["prompt_tokens"] += seen
@@ -5350,6 +5366,8 @@ class Service:
                             fresh = getattr(self.engine, "last", None)
                             if fresh is not None and fresh is not before:      # the engine's clock for THIS request
                                 timings = request_timings(seen, n, last)
+                                if timings is not None:
+                                    timings.update(energy)              # the same figures as the Monitor's
                                 self.last_timings = dict(timings, at=int(time.time())) if timings else None
                             self.last_request_at = time.time()
                             now = time.time()
