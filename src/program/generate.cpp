@@ -3374,6 +3374,8 @@ int main(int argc, char** argv) {
     strata::metal_engine::set_model_shard(o.native_preset.c_str());   // the decode window reads the model GGUF itself
     o.mmap_experts = true;   // ... experts included: no resident copy of them (the GGUF shards in place)
     if (false) {
+#elif defined(__aarch64__)   // Arm (Jetson, DGX Spark): no AVX2 to ask for; the CPU's expert rows run on ggml-cpu (NEON)
+    if (false) {
 #else
     if (!strata::kernels::cpu::cpu_avx2_ok() && isa_floor[0] == '\0') {
 #endif
@@ -3578,7 +3580,13 @@ int main(int argc, char** argv) {
                                      "(setup writes it; run setup again).\n");
         }
         strata::kernels::cpu::cpu_require_expert_support();
-    } else if (!strata::kernels::cpu::cpu_avx512_ok())
+    }
+#if defined(__aarch64__)
+    else
+        std::fprintf(stderr, "strata generate: %s: the CPU's expert rows run on ggml-cpu (NEON)\n",
+                     strata::kernels::cpu::cpu_name().c_str());
+#else
+    else if (!strata::kernels::cpu::cpu_avx512_ok())
         std::fprintf(stderr, "strata generate: this CPU has no AVX-512: the expert kernels run on %s "
                              "(multi-token for the i-quant gate/up rows)\n",
                      !strata::kernels::cpu::cpu_avx2_ok()
@@ -3586,6 +3594,7 @@ int main(int argc, char** argv) {
                             ? "AVX1 128-bit (iq_avx1, the older-CPU build)"
                             : "ggml-cpu vec_dot (no AVX2: the older-CPU build)")
                      : std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
+#endif
     // the compiled shape; a native model's file replaces it below with its own metadata (read_geometry), which a
     // pruned variant (GSQ-RCO Coder, fewer than 512 experts) differs from
     strata::core::ModelGeometry g;

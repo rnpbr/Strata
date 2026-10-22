@@ -355,6 +355,23 @@ inline std::vector<int> plan() {
     return s.plan;
 }
 
+/// The physical core of a logical CPU: the lowest CPU number in its core_cpus_list (thread_siblings_list on kernels
+/// before 5.x), unique across the machine.  core_id alone is not: it restarts in every package on x86 and in every
+/// cluster on Arm (a Jetson AGX Orin numbers the cores 0-3 in each of its three clusters).  -1 when sysfs has neither.
+inline long linux_core_key(int cpu) {
+    for (const char* what : {"core_cpus_list", "thread_siblings_list"}) {
+        char path[112];
+        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/%s", cpu, what);
+        if (std::FILE* f = std::fopen(path, "r")) {
+            long first = -1;
+            const bool ok = std::fscanf(f, "%ld", &first) == 1;
+            std::fclose(f);
+            if (ok && first >= 0) return first;
+        }
+    }
+    return -1;
+}
+
 /// Reads sysfs for the cores of the process's CPUs.  `cpus` empty: every CPU `configure` saw.
 inline std::vector<LogicalCpu> read_topology(const std::vector<int>& cpus) {
     auto read_id = [](int cpu, const char* what) -> long {
@@ -368,7 +385,7 @@ inline std::vector<LogicalCpu> read_topology(const std::vector<int>& cpus) {
         return v;
     };
     std::vector<LogicalCpu> out;
-    for (int c : cpus) out.push_back({c, read_id(c, "physical_package_id"), read_id(c, "core_id")});
+    for (int c : cpus) out.push_back({c, read_id(c, "physical_package_id"), linux_core_key(c)});
     return out;
 }
 

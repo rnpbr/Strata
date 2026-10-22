@@ -28,6 +28,16 @@ if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Release")
   add_link_options(/DEBUG /OPT:REF /OPT:ICF)
 endif()
 
+# The host CPU family. x86-64 builds Strata's own AVX2 / AVX-512 expert kernels. arm64 (Jetson, DGX Spark) builds
+# NEON kernels for the Q2_0 rows, and every other CPU expert row runs on ggml-cpu's NEON code.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|x64|X64)$")
+  set(STRATA_CPU_X86 ON)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+  set(STRATA_CPU_ARM64 ON)
+else()
+  message(FATAL_ERROR "Strata builds for x86-64 and arm64, not for ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
 # The prebuilt release (setup.py downloads it, so users need no compiler): ggml's CPU backend for any AVX2 CPU
 # instead of this machine's (Strata's own AVX-512 kernels are per-file and chosen at run time either way), and
 # the MSVC runtime linked in, so no Visual C++ redistributable is needed.
@@ -43,6 +53,9 @@ if(NOT STRATA_ISA_FLOOR STREQUAL "" AND NOT STRATA_ISA_FLOOR STREQUAL "avx" AND 
 endif()
 if(STRATA_ISA_FLOOR AND STRATA_PORTABLE)
   message(FATAL_ERROR "STRATA_ISA_FLOOR (an older-CPU build) and STRATA_PORTABLE (the AVX2 release build) exclude each other")
+endif()
+if(STRATA_ISA_FLOOR AND NOT STRATA_CPU_X86)
+  message(FATAL_ERROR "STRATA_ISA_FLOOR is an x86 older-CPU build; it has no meaning on ${CMAKE_SYSTEM_PROCESSOR}")
 endif()
 if(STRATA_PORTABLE AND MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -1468,11 +1481,20 @@ if(STRATA_BUILD_TESTS OR STRATA_BUILD_CONVERSATION_TESTS)
 endif()
 
 add_library(strata_kernels_cpu STATIC src/kernels/cpu/expert.cpp src/kernels/cpu/pool.cpp
-            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/q2_avx2.cpp src/kernels/cpu/hadamard.cpp)
+            src/kernels/cpu/expert_layout.cpp src/kernels/cpu/hadamard.cpp)
 target_include_directories(strata_kernels_cpu PUBLIC include)
+if(STRATA_CPU_X86)
+  target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/q2_avx2.cpp)
+else()
+  # the x86 kernels' entry points: the predicates answer no, a kernel reached anyway stops the engine
+  target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/x86_absent.cpp)
+endif()
 # Plan v0.3 P6: only the kernel files get the AVX-512 / AVX2 flags; the pool and the probe run on any x86-64,
 # and the engine picks the kernels at run time (cpu_avx512_ok).
-if(MSVC)
+if(STRATA_CPU_ARM64)
+  # Armv8.2-A's SDOT: every Jetson from Xavier on, Grace and GB10 have it, and cpu_features() checks it at start
+  set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "-march=armv8.2-a+dotprod")
+elseif(MSVC)
   set_source_files_properties(src/kernels/cpu/expert.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
   set_source_files_properties(src/kernels/cpu/q2_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
 else()
@@ -1486,12 +1508,14 @@ endif()
 # target("avxvnni") - never -mavxvnni on a file, which would let the compiler use it anywhere - and MSVC takes the
 # intrinsics under /arch:AVX2.  A compiler without them (GCC < 11, Clang < 12) builds the files without the copies.
 include(CheckCXXSourceCompiles)
-if(MSVC)
-  set(CMAKE_REQUIRED_FLAGS "/arch:AVX2")
-else()
-  set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma -mf16c")
-endif()
-check_cxx_source_compiles([=[
+set(_strata_avxvnni STRATA_AVXVNNI=0)
+if(STRATA_CPU_X86)
+  if(MSVC)
+    set(CMAKE_REQUIRED_FLAGS "/arch:AVX2")
+  else()
+    set(CMAKE_REQUIRED_FLAGS "-mavx2 -mfma -mf16c")
+  endif()
+  check_cxx_source_compiles([=[
 #include <immintrin.h>
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((target("avxvnni")))
@@ -1501,14 +1525,13 @@ int main() {
     volatile int x = 1;
     return _mm256_extract_epi32(dots(_mm256_set1_epi32(x), _mm256_set1_epi32(x)), 0) == 0;
 }
-]=] STRATA_HAVE_AVXVNNI_INTRINSICS)
-unset(CMAKE_REQUIRED_FLAGS)
-if(STRATA_HAVE_AVXVNNI_INTRINSICS)
-  set(_strata_avxvnni STRATA_AVXVNNI=1)
-else()
-  set(_strata_avxvnni STRATA_AVXVNNI=0)
+  ]=] STRATA_HAVE_AVXVNNI_INTRINSICS)
+  unset(CMAKE_REQUIRED_FLAGS)
+  if(STRATA_HAVE_AVXVNNI_INTRINSICS)
+    set(_strata_avxvnni STRATA_AVXVNNI=1)
+  endif()
+  set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
 endif()
-set_property(SOURCE src/kernels/cpu/q2_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
 find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC Threads::Threads)
 
@@ -1533,7 +1556,11 @@ if(STRATA_NATIVE_EXPERTS)
   set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
   set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  if(STRATA_PORTABLE)
+  if(STRATA_PORTABLE AND STRATA_CPU_ARM64)
+    # the arm64 release: the floor every target has (Orin's A78AE, Thor's V3AE, GB10's X925 / A725)
+    set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+    set(GGML_CPU_ARM_ARCH "armv8.2-a+dotprod+fp16" CACHE STRING "" FORCE)
+  elseif(STRATA_PORTABLE)
     set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
     foreach(_f GGML_AVX GGML_AVX2 GGML_FMA GGML_F16C GGML_BMI2)
       set(${_f} ON CACHE BOOL "" FORCE)
@@ -1573,13 +1600,16 @@ if(STRATA_NATIVE_EXPERTS)
   endif()
   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)
-  target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
-                                           src/kernels/cpu/iq_avx2.cpp src/kernels/cpu/kq_avx2.cpp
-                                           src/kernels/cpu/kq_avx1.cpp src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp
-                                           src/kernels/cpu/nvfp4_avx512.cpp src/kernels/cpu/nvfp4_avx2.cpp
-                                           src/kernels/cpu/tq_cpu.cpp src/kernels/cpu/tq_avx2.cpp src/kernels/cpu/tq_avx512.cpp)
+  target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/tq_cpu.cpp)
+  if(STRATA_CPU_X86)
+    target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
+                                             src/kernels/cpu/kq_avx2.cpp src/kernels/cpu/kq_avx1.cpp
+                                             src/kernels/cpu/q2_avx1.cpp src/kernels/cpu/iq_avx1.cpp
+                                             src/kernels/cpu/nvfp4_avx512.cpp src/kernels/cpu/nvfp4_avx2.cpp
+                                             src/kernels/cpu/tq_avx2.cpp src/kernels/cpu/tq_avx512.cpp)
+  endif()
   target_include_directories(strata_kernels_cpu PRIVATE third_party/ggml)
-  if(MSVC)
+  if(STRATA_CPU_X86 AND MSVC)
     set_source_files_properties(src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/nvfp4_avx512.cpp
                                 PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
     set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
@@ -1594,7 +1624,7 @@ if(STRATA_NATIVE_EXPERTS)
     set_source_files_properties(src/kernels/cpu/q2_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
     # the older CPUs' i-quant expert rows (iq_avx1.hpp): 128-bit SSSE3/SSE2 integer, SSE2 float, no FMA/F16C
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX")
-  else()
+  elseif(STRATA_CPU_X86)
     set_source_files_properties(src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/nvfp4_avx512.cpp PROPERTIES COMPILE_OPTIONS
                                 "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
     set_source_files_properties(src/kernels/cpu/iq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
@@ -1615,7 +1645,9 @@ if(STRATA_NATIVE_EXPERTS)
     set_source_files_properties(src/kernels/cpu/iq_avx1.cpp PROPERTIES COMPILE_OPTIONS
                                 "-msse4.2;-mavx;-mno-avx2;-mno-fma;-mno-f16c")
   endif()
-  set_property(SOURCE src/kernels/cpu/iq_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
+  if(STRATA_CPU_X86)
+    set_property(SOURCE src/kernels/cpu/iq_avx2.cpp APPEND PROPERTY COMPILE_DEFINITIONS ${_strata_avxvnni})
+  endif()
   if(STRATA_ISA_FLOOR STREQUAL "avx")
     target_compile_definitions(strata_kernels_cpu PRIVATE STRATA_ISA_FLOOR_AVX=1)
   elseif(STRATA_ISA_FLOOR STREQUAL "none")

@@ -116,20 +116,7 @@ std::vector<LogicalCpuInfo> logical_cpu_layout() {
     std::vector<unsigned long> mask;
     std::vector<int> allowed;
     if (detail::get_thread_affinity(mask, &allowed) != 0) return out;
-    auto read = [](int cpu, const char* what) -> long {
-        char path[96];
-        std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/topology/%s", cpu, what);
-        long v = -1;
-        if (std::FILE* f = std::fopen(path, "r")) {
-            if (std::fscanf(f, "%ld", &v) != 1) v = -1;
-            std::fclose(f);
-        }
-        return v;
-    };
-    for (int cpu : allowed) {
-        const long pkg = read(cpu, "physical_package_id"), core = read(cpu, "core_id");
-        out.push_back({cpu, pkg >= 0 && core >= 0 ? pkg * 1000000 + core : -1});
-    }
+    for (int cpu : allowed) out.push_back({cpu, strata::aux_cpus::linux_core_key(cpu)});
 #else
     for (unsigned i = 0; i < std::thread::hardware_concurrency(); ++i) out.push_back({(int) i, -1});
 #endif
@@ -468,7 +455,7 @@ static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affini
         CoreLinux cl;
         cl.cpu = cpu;
         cl.pkg = topo_read(cpu, "physical_package_id");
-        cl.core = topo_read(cpu, "core_id");
+        cl.core = strata::aux_cpus::linux_core_key(cpu);
         cl.cap = cap_read(cpu);
         if (cl.cap > 0) {
             max_cap = (std::max)(max_cap, cl.cap);

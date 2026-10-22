@@ -92,13 +92,19 @@ struct ExpertScratch {
 /// Runtime CPU feature check.  The kernel uses AVX512-VNNI + AVX512-VBMI + AVX512VL, and code compiled with
 /// `/arch:AVX512` can emit AVX-512 anywhere in its translation unit, so a machine without them must be
 /// REFUSED rather than silently run.  `s2_expert_scalar` is the fallback and exists for tests.
+/// On arm64 the kernel is NEON with the Armv8.2-A dot product (SDOT), and that is what `usable()` checks.
 struct CpuFeatures {
     bool avx512f = false;
     bool avx512bw = false;
     bool avx512vl = false;
     bool avx512_vnni = false;
     bool avx512_vbmi = false;
+    bool asimd_dot = false;
+#if defined(__aarch64__)
+    bool usable() const { return asimd_dot; }
+#else
     bool usable() const { return avx512f && avx512bw && avx512vl && avx512_vnni && avx512_vbmi; }
+#endif
     /// A one-line description of what is missing, or "ok".
     const char* reason() const;
 };

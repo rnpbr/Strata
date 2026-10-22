@@ -5,11 +5,16 @@
 // include/strata/kernels/cpu/expert.hpp.  Read that header first; it says why each piece is shaped this way.
 #include "strata/kernels/cpu/expert.hpp"
 
+#if defined(__x86_64__) || defined(_M_X64)
+#define STRATA_EXPERT_X86 1
 #include <immintrin.h>
-#if defined(_MSC_VER)
-#include <intrin.h>
+#elif defined(__aarch64__)
+#include <arm_neon.h>
+#if !defined(__ARM_FEATURE_DOTPROD)
+#error "expert.cpp's arm64 kernel needs DotProd: CMake compiles it with -march=armv8.2-a+dotprod"
+#endif
 #else
-#include <cpuid.h>
+#error "expert.cpp has kernels for x86-64 and arm64 only"
 #endif
 
 #include <cmath>
@@ -72,6 +77,7 @@ inline float h2f(const uint8_t* p) {
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
+#if defined(STRATA_EXPERT_X86)
 void quantize_oracle_q8_0(const float* x, int n, ActQ& a) {
     a.nchunks = n / QKA;
     for (int chunk = 0; chunk < a.nchunks; ++chunk) {
@@ -109,7 +115,34 @@ void quantize_oracle_q8_0(const float* x, int n, ActQ& a) {
         a.hx[chunk] = a.scale[chunk] * float(sum);
     }
 }
+#else
+/// The same contract as the x86 sequence: the scale rounded to fp16 (nearest even, as F16C's mode 0), the codes
+/// rounded to nearest even (as _MM_FROUND_TO_NEAREST_INT), then the integer sums.
+void quantize_oracle_q8_0(const float* x, int n, ActQ& a) {
+    a.nchunks = n / QKA;
+    for (int chunk = 0; chunk < a.nchunks; ++chunk) {
+        const float* xb = x + chunk * QKA;
+        float32x4_t m = vdupq_n_f32(0.0f);
+        for (int j = 0; j < QKA; j += 4) m = vmaxq_f32(m, vabsq_f32(vld1q_f32(xb + j)));
+        const float amax = vmaxvq_f32(m);
+        const __fp16 half_d = (__fp16) (amax / 127.0f);
+        const float inverse = amax != 0.0f ? 127.0f / amax : 0.0f;
+        int8_t* q = a.q + chunk * QKA;
+        int32_t sum = 0;
+        for (int j = 0; j < QKA; j += 8) {
+            const int32x4_t v0 = vcvtnq_s32_f32(vmulq_n_f32(vld1q_f32(xb + j), inverse));
+            const int32x4_t v1 = vcvtnq_s32_f32(vmulq_n_f32(vld1q_f32(xb + j + 4), inverse));
+            vst1_s8(q + j, vqmovn_s16(vcombine_s16(vqmovn_s32(v0), vqmovn_s32(v1))));   // saturating, as packs is
+            sum += vaddvq_s32(v0) + vaddvq_s32(v1);
+        }
+        a.scale[chunk] = h2f((const uint8_t*) &half_d);
+        a.sum[chunk] = sum;
+        a.hx[chunk] = a.scale[chunk] * float(sum);
+    }
+}
+#endif
 
+#if defined(STRATA_EXPERT_X86)
 /// 2-bit unpack via VPMULTISHIFTQB.
 ///
 /// ARGUMENT ORDER IS (control, data) AND WAS DETERMINED EMPIRICALLY (`bench/micro/probe_multishift.cpp`).
@@ -255,6 +288,52 @@ inline int chunk_dot_oracle(const uint8_t* codes, const int8_t* q, int sum) {
     const __m128i pairs = _mm_hadd_epi32(halves, halves);
     return _mm_cvtsi128_si32(_mm_hadd_epi32(pairs, pairs)) - sum;
 }
+#else
+/// 32 two-bit codes of one activation chunk (eight bytes, four codes a byte from the low bits up) as int8 lanes.
+struct Codes32 {
+    int8x16_t lo, hi;
+};
+
+inline Codes32 unpack32(const uint8_t* codes) {
+    static constexpr uint8_t kByte[16] = {0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3};
+    static constexpr int8_t kShift[16] = {0, -2, -4, -6, 0, -2, -4, -6, 0, -2, -4, -6, 0, -2, -4, -6};
+    const uint8x8_t raw = vld1_u8(codes);
+    const uint8x16_t table = vcombine_u8(raw, raw);
+    const uint8x16_t byte = vld1q_u8(kByte);
+    const int8x16_t shift = vld1q_s8(kShift);
+    const uint8x16_t three = vdupq_n_u8(3);
+    const uint8x16_t lo = vandq_u8(vshlq_u8(vqtbl1q_u8(table, byte), shift), three);
+    const uint8x16_t hi = vandq_u8(vshlq_u8(vqtbl1q_u8(table, vaddq_u8(byte, vdupq_n_u8(4))), shift), three);
+    return {vreinterpretq_s8_u8(lo), vreinterpretq_s8_u8(hi)};
+}
+
+/// The chunk's codes against its 32 int8 activations, as four partial sums. SDOT is signed by signed; codes of
+/// 0..3 read the same as int8.
+inline int32x4_t dot32(const Codes32& c, const int8_t* xq) {
+    return vdotq_s32(vdotq_s32(vdupq_n_s32(0), c.lo, vld1q_s8(xq)), c.hi, vld1q_s8(xq + 16));
+}
+
+/// `row_dot` as in the x86 kernel: one float vector accumulator for the whole row, the scalar correction beside it,
+/// one reduction at the end. The lane order differs from x86, so the last bits can too.
+inline float row_dot(const uint8_t* codes, const uint8_t* scales, const ActQ& a, int nblocks) {
+    float32x4_t acc = vdupq_n_f32(0.0f);
+    float corr = 0.f;
+    for (int b = 0; b < nblocks; ++b) {
+        const float d = h2f(scales + 2 * b);
+        const int32x4_t lo = dot32(unpack32(codes + b * 16), a.q + b * QK);
+        const int32x4_t hi = dot32(unpack32(codes + b * 16 + 8), a.q + b * QK + QKA);
+        acc = vfmaq_n_f32(acc, vcvtq_f32_s32(lo), d * a.scale[2 * b]);
+        acc = vfmaq_n_f32(acc, vcvtq_f32_s32(hi), d * a.scale[2 * b + 1]);
+        corr += d * (a.hx[2 * b] + a.hx[2 * b + 1]);
+    }
+    return vaddvq_f32(acc) - corr;
+}
+
+/// Integer sums are exact, so this is the x86 oracle's value bit for bit.
+inline int chunk_dot_oracle(const uint8_t* codes, const int8_t* q, int sum) {
+    return vaddvq_s32(dot32(unpack32(codes), q)) - sum;
+}
+#endif
 
 inline float row_dot_oracle(const uint8_t* codes, const uint8_t* scales, const ActQ& a, int nblocks) {
     float result = 0.0f;
@@ -272,6 +351,7 @@ inline float row_dot_oracle(const uint8_t* codes, const uint8_t* scales, const A
 
 /// `row_dot` for NT activations at once: the codes of each block are unpacked once, and each token's
 /// accumulator sees exactly the operations `row_dot` would apply to it, in the same order.
+#if defined(STRATA_EXPERT_X86)
 template<int NT>
 inline void row_dot_multi(const uint8_t* codes, const uint8_t* scales, const ActQ* const* a, int nblocks,
                           float* res) {
@@ -296,6 +376,26 @@ inline void row_dot_multi(const uint8_t* codes, const uint8_t* scales, const Act
     }
     for (int t = 0; t < NT; ++t) res[t] = hsum_ps(acc[t]) - corr[t];
 }
+#else
+template<int NT>
+inline void row_dot_multi(const uint8_t* codes, const uint8_t* scales, const ActQ* const* a, int nblocks,
+                          float* res) {
+    float32x4_t acc[NT];
+    float corr[NT];
+    for (int t = 0; t < NT; ++t) { acc[t] = vdupq_n_f32(0.0f); corr[t] = 0.f; }
+    for (int b = 0; b < nblocks; ++b) {
+        const float d = h2f(scales + 2 * b);
+        const Codes32 lo = unpack32(codes + b * 16);
+        const Codes32 hi = unpack32(codes + b * 16 + 8);
+        for (int t = 0; t < NT; ++t) {
+            acc[t] = vfmaq_n_f32(acc[t], vcvtq_f32_s32(dot32(lo, a[t]->q + b * QK)), d * a[t]->scale[2 * b]);
+            acc[t] = vfmaq_n_f32(acc[t], vcvtq_f32_s32(dot32(hi, a[t]->q + b * QK + QKA)), d * a[t]->scale[2 * b + 1]);
+            corr[t] += d * (a[t]->hx[2 * b] + a[t]->hx[2 * b + 1]);
+        }
+    }
+    for (int t = 0; t < NT; ++t) res[t] = vaddvq_f32(acc[t]) - corr[t];
+}
+#endif
 
 template<int NT>
 void expert_multi(const uint8_t* blob, const ActQ* const* a1, float* const* out, ExpertScratchMulti& ws) {
@@ -347,6 +447,7 @@ void act_quant_q8_1(const float* x, int n, ActQ& a) {
     // Plan v0.3 P6: AVX-512, the same operations per element as the scalar loop below (max of |x|, one multiply,
     // +-0.5 away from zero, truncation, clamp), so the result is bitwise the scalar one.  The scalar loop took
     // ~22 us per 2560 values - 3.2 ms of every speculative round.
+#if defined(STRATA_EXPERT_X86)
     {
         const __m512 half = _mm512_set1_ps(0.5f), mhalf = _mm512_set1_ps(-0.5f), zero = _mm512_setzero_ps();
         const __m512i lo = _mm512_set1_epi32(-127), hi = _mm512_set1_epi32(127);
@@ -373,6 +474,7 @@ void act_quant_q8_1(const float* x, int n, ActQ& a) {
         }
         return;
     }
+#endif
     for (int k = 0; k < a.nchunks; ++k) {
         const float* xb = x + k * QKA;
         float amax = 0.f;
@@ -503,6 +605,7 @@ void s2_expert_down_rows_multi(const uint8_t* blob, const ActQ* const* a2, int n
 // 64 weights, interleaved), which ggml-cpu computes with a scalar loop on x86.  This is `row_dot_multi_z` with
 // the block stride of the GGUF layout: the same unpack, the same VNNI dot, the same correction.
 namespace {
+#if defined(STRATA_EXPERT_X86)
 template<int NT>
 inline void q2g_row_multi(const uint8_t* row, const ActQ* const* a, int nblocks, float* res) {
     __m512 acc[NT], corr[NT];
@@ -534,6 +637,26 @@ inline void q2g_row_multi(const uint8_t* row, const ActQ* const* a, int nblocks,
     }
     for (int t = 0; t < NT; ++t) res[t] = _mm512_reduce_add_ps(acc[t]) - _mm512_reduce_add_ps(corr[t]);
 }
+#else
+template<int NT>
+inline void q2g_row_multi(const uint8_t* row, const ActQ* const* a, int nblocks, float* res) {
+    float32x4_t acc[NT];
+    float corr[NT];
+    for (int t = 0; t < NT; ++t) { acc[t] = vdupq_n_f32(0.0f); corr[t] = 0.f; }
+    for (int b = 0; b < nblocks; ++b) {
+        const uint8_t* block = row + (size_t) b * 18;
+        const float d = h2f(block);
+        const Codes32 lo = unpack32(block + 2);
+        const Codes32 hi = unpack32(block + 10);
+        for (int t = 0; t < NT; ++t) {
+            acc[t] = vfmaq_n_f32(acc[t], vcvtq_f32_s32(dot32(lo, a[t]->q + b * QK)), d * a[t]->scale[2 * b]);
+            acc[t] = vfmaq_n_f32(acc[t], vcvtq_f32_s32(dot32(hi, a[t]->q + b * QK + QKA)), d * a[t]->scale[2 * b + 1]);
+            corr[t] += d * (a[t]->hx[2 * b] + a[t]->hx[2 * b + 1]);
+        }
+    }
+    for (int t = 0; t < NT; ++t) res[t] = vaddvq_f32(acc[t]) - corr[t];
+}
+#endif
 template<int NT>
 void q2g_rows(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, float* const* out, int r0, int r1) {
     float res[NT];

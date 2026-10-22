@@ -96,8 +96,12 @@ int main(int argc, char** argv) {
 
     // ---- the CPU must be able to run the kernel, and the report must say WHICH feature is missing
     const cpu::CpuFeatures feat = cpu::cpu_features();
-    std::printf("  %-44s %s\n", "AVX512 F/BW/VL/VNNI/VBMI",
-                feat.usable() ? "all present" : feat.reason());
+#if defined(__aarch64__)
+    const char* needs = "Armv8.2-A DotProd";
+#else
+    const char* needs = "AVX512 F/BW/VL/VNNI/VBMI";
+#endif
+    std::printf("  %-44s %s\n", needs, feat.usable() ? "all present" : feat.reason());
     if (!feat.usable()) {
         std::printf("      the VNNI path cannot run here; only the scalar oracle can be exercised.\n");
         std::printf("      P2.S3's kernel check is SKIPPED, not passed.\n");

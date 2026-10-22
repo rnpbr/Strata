@@ -7,14 +7,20 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <fstream>
+#include <sstream>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#define STRATA_CPUID 1
 #if defined(_MSC_VER)
 #include <intrin.h>
 #include <immintrin.h>
 #else
 #include <cpuid.h>
 #endif
-#include <fstream>
-#include <sstream>
+#elif defined(__aarch64__) && defined(__linux__)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#endif
 
 namespace strata::kernels::cpu {
 namespace {
@@ -39,6 +45,7 @@ int cpu_isa_cap() {
     return cap;
 }
 
+#if defined(STRATA_CPUID)
 bool cpu_avx512_ok() {
     static const bool ok = [] {
         if (const char* f = std::getenv("STRATA_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
@@ -61,9 +68,7 @@ bool cpu_avx512_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
-#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         if ((xcr0 & 0xE6) != 0xE6) return false;          // the OS saves the AVX-512 state
@@ -95,9 +100,7 @@ bool cpu_avx512bw_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
-#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         if ((xcr0 & 0xE6) != 0xE6) return false;          // the OS saves the AVX-512 state
@@ -131,9 +134,7 @@ bool cpu_avx2_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
-#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         if ((xcr0 & 0x6) != 0x6) return false;            // the OS saves the SSE and AVX state
@@ -161,9 +162,7 @@ bool cpu_avx1_ok() {
         const unsigned long long xcr0 = _xgetbv(0);
 #else
         unsigned lo = 0, hi = 0;
-#if !defined(__aarch64__)   // arm64 (the Metal build): no XCR0; cpuid reads zero there, so this is never reached
         __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-#endif
         const unsigned long long xcr0 = ((unsigned long long) hi << 32) | lo;
 #endif
         return (xcr0 & 0x6) == 0x6;
@@ -185,6 +184,15 @@ bool cpu_sse42_ok() {
     }();
     return ok;
 }
+#else
+// No x86 kernels on this CPU: every probe answers no, so the expert rows run on ggml-cpu and the router dot and the
+// Q2_0 rows on the portable code.
+bool cpu_avx512_ok() { return false; }
+bool cpu_avx512bw_ok() { return false; }
+bool cpu_avx2_ok() { return false; }
+bool cpu_avx1_ok() { return false; }
+bool cpu_sse42_ok() { return false; }
+#endif
 
 const char* isa_floor_build() {
 #if defined(STRATA_ISA_FLOOR_AVX)
@@ -196,6 +204,7 @@ const char* isa_floor_build() {
 #endif
 }
 
+#if defined(STRATA_CPUID)
 namespace {
 void cpuid_regs(unsigned leaf, unsigned sub, unsigned r[4]) {
 #if defined(_MSC_VER)
@@ -207,6 +216,7 @@ void cpuid_regs(unsigned leaf, unsigned sub, unsigned r[4]) {
 #endif
 }
 }  // namespace
+#endif
 
 int iq256_gather_setting() {
     static const int s = [] {
@@ -217,6 +227,7 @@ int iq256_gather_setting() {
     return s;
 }
 
+#if defined(STRATA_CPUID)
 bool cpu_gather_fast() {
     static const bool ok = [] {
         if (cpu_isa_cap() < 3) return false;   // STRATA_FORCE_ISA: as on a CPU that stops at AVX2
@@ -295,6 +306,39 @@ std::string cpu_name() {
     const size_t b0 = name.find_first_not_of(' '), b1 = name.find_last_not_of(' ');
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
 }
+#else
+bool cpu_gather_fast() { return false; }
+bool cpu_gather_fast_here() { return false; }
+bool cpu_avxvnni_ok() { return false; }
+
+std::string cpu_name() {
+    // cpu0's MIDR_EL1: the implementer and the part number. A hybrid chip (GB10) names its first cluster.
+    unsigned long long midr = 0;
+    if (std::FILE* f = std::fopen("/sys/devices/system/cpu/cpu0/regs/identification/midr_el1", "r")) {
+        if (std::fscanf(f, "%llx", &midr) != 1) midr = 0;
+        std::fclose(f);
+    }
+    if (midr == 0) return "unknown";
+    const unsigned implementer = (unsigned) (midr >> 24) & 0xffu, part = (unsigned) (midr >> 4) & 0xfffu;
+    struct Part {
+        unsigned implementer, part;
+        const char* name;
+    };
+    static constexpr Part kParts[] = {
+        {0x41, 0xd42, "Arm Cortex-A78AE"},    // Jetson Orin
+        {0x41, 0xd4f, "Arm Neoverse V2"},     // Grace
+        {0x41, 0xd83, "Arm Neoverse V3AE"},   // Jetson Thor
+        {0x41, 0xd85, "Arm Cortex-X925"},     // DGX Spark (GB10)
+        {0x41, 0xd87, "Arm Cortex-A725"},     // DGX Spark (GB10)
+        {0x4e, 0x004, "NVIDIA Carmel"},       // Jetson Xavier
+    };
+    for (const Part& p : kParts)
+        if (p.implementer == implementer && p.part == part) return p.name;
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "arm64 (implementer 0x%02x, part 0x%03x)", implementer, part);
+    return buf;
+}
+#endif
 
 // ---- the AVX-512 probe and the oracle flag (#795) ----
 //
@@ -311,6 +355,9 @@ bool expert_oracle_q8_0_enabled() { return g_oracle_q8_0.load(std::memory_order_
 
 const char* CpuFeatures::reason() const {
     if (usable()) return "ok";
+#if defined(__aarch64__)
+    return "missing the Armv8.2-A dot product (asimddp)";
+#else
     // Named individually: "AVX-512 not supported" sends a user looking for a new CPU when the machine may have
     // AVX-512F and be missing only VNNI, which is a much narrower and more explicable gap.
     static char buf[160];
@@ -318,10 +365,17 @@ const char* CpuFeatures::reason() const {
                   avx512bw ? "" : "AVX512BW ", avx512vl ? "" : "AVX512VL ",
                   avx512_vnni ? "" : "AVX512-VNNI ", avx512_vbmi ? "" : "AVX512-VBMI");
     return buf;
+#endif
 }
 
 CpuFeatures cpu_features() {
     CpuFeatures f;
+#if !defined(STRATA_CPUID)
+#if defined(__aarch64__) && defined(__linux__)
+    f.asimd_dot = (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) != 0;
+#endif
+    return f;
+#else
     int reg[4] = {0, 0, 0, 0};
 #if defined(_MSC_VER)
     __cpuid(reg, 0);
@@ -341,37 +395,57 @@ CpuFeatures cpu_features() {
     f.avx512_vnni = (ecx >> 11) & 1u;
     f.avx512_vbmi = (ecx >> 1) & 1u;
     return f;
+#endif
 }
 
 void cpu_require_expert_support() {
     const CpuFeatures f = cpu_features();
     if (f.usable()) return;
+#if defined(__aarch64__)
+    std::fprintf(stderr,
+                 "strata: this CPU cannot run the expert kernel: %s.\n"
+                 "        The Arm kernel needs the Armv8.2-A dot product (Cortex-A76 / Neoverse N1 or newer).\n",
+                 f.reason());
+#else
     std::fprintf(stderr,
                  "strata: this CPU cannot run the expert kernel: %s.\n"
                  "        The engine needs AVX512-VNNI and AVX512-VBMI (Intel Ice Lake / AMD Zen 4 or newer).\n"
                  "        The scalar fallback exists for tests only and is far too slow to decode with.\n",
                  f.reason());
+#endif
     std::exit(1);
 }
 
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
+#if defined(STRATA_CPUID)
     if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
     else if (cpu_avx2_ok()) q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
     else q2_0_gguf_rows_multi_avx1(w, row_bytes, nblocks, a, nt, out, r0, r1);   // issue #1699: the third rung
+#else
+    q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);   // expert.cpp's NEON rows
+#endif
 }
 
 void q2_rows_any_legacy(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                         int r0, int r1) {
+#if defined(STRATA_CPUID)
     if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
     else if (cpu_avx2_ok()) q2_0_gguf_rows_multi_avx2_legacy(w, row_bytes, nblocks, a, nt, out, r0, r1);
     else q2_0_gguf_rows_multi_avx1_legacy(w, row_bytes, nblocks, a, nt, out, r0, r1);
+#else
+    q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+#endif
 }
 
 void act_quant_any(const float* x, int n, ActQ& a) {
+#if defined(STRATA_CPUID)
     if (cpu_avx512_ok()) act_quant_q8_1(x, n, a);
     else if (cpu_avx2_ok()) act_quant_q8_1_avx2(x, n, a);
     else act_quant_q8_1_avx1(x, n, a);   // issue #1699
+#else
+    act_quant_q8_1(x, n, a);
+#endif
 }
 
 #if !defined(STRATA_NATIVE_EXPERTS)
