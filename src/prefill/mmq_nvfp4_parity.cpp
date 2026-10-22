@@ -22,7 +22,9 @@
 #include "ggml.h"
 
 #include <cuda_runtime.h>
+#if defined(__x86_64__) || defined(_M_X64)
 #include <immintrin.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -43,7 +45,11 @@ void ck(cudaError_t e, const char* what) {
 }
 
 // one product: x [T, cols] times w [rows, cols]^T
+#if defined(__x86_64__) || defined(_M_X64)
 float half_round(float v) { return _mm_cvtss_f32(_mm_cvtph_ps(_mm_cvtps_ph(_mm_set_ss(v), 0))); }
+#else
+float half_round(float v) { return (float) (_Float16) v; }   // Arm: the hardware conversion, also to nearest even
+#endif
 
 int product(const uint8_t* w_host, int64_t rows, int64_t cols, int T, const char* what, std::mt19937& rng,
             const std::vector<float>* given = nullptr, double* rel_out = nullptr, double* rel16_out = nullptr,

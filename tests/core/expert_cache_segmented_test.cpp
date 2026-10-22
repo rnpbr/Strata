@@ -21,6 +21,13 @@ size_t free_vram() {
     return f;
 }
 
+// A GPU that shares the RAM (Jetson): the driver keeps freed pages in its own pool (nvmap, up to 7.7 GiB on an AGX Orin)
+// for the next GPU allocation, and cudaMemGetInfo, which follows MemAvailable there, does not see them come back.
+bool integrated_gpu() {
+    int dev = 0, v = 0;
+    return cudaGetDevice(&dev) == cudaSuccess && cudaDeviceGetAttribute(&v, cudaDevAttrIntegrated, dev) == cudaSuccess && v;
+}
+
 // slot i holds the byte (i * 7 + 1) everywhere
 bool fill(strata::core::ExpertCache& c, int64_t from, int64_t to, int64_t blob) {
     std::vector<uint8_t> b((size_t) blob);
@@ -75,8 +82,10 @@ int main() {
         if (c.slots() != 32 || c.mapped_bytes() != 32ll << 20 || c.bytes() != 32ll << 20)
             return fail("shrunk sizes");
         if (c.full_slots() != kSlots || c.full_bytes() != kSlots * kBlob) return fail("full sizes");
-        const size_t freed = free_vram() - before;
-        if (freed + (8u << 20) < (size_t) (64ll << 20)) {   // ~64 MiB back to the driver (WDDM rounds a little)
+        const size_t now = free_vram();
+        const size_t freed = now > before ? now - before : 0;
+        // ~64 MiB back to the driver (WDDM rounds a little); not visible on an integrated GPU (integrated_gpu above)
+        if (!integrated_gpu() && freed + (8u << 20) < (size_t) (64ll << 20)) {
             std::fprintf(stderr, "freed %zu bytes\n", freed);
             return fail("VRAM not given back");
         }

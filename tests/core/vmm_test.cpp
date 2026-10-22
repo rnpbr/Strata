@@ -55,16 +55,22 @@ int main() {
     CHECK(same);
     CHECK(a.map_range(3, 7, [] { return (VmmChunk) 0; }) && a.mapped_count() == 7);
     CHECK(cudaMemset(a.base() + 4 * G, 7, 3 * G) == cudaSuccess && cudaDeviceSynchronize() == cudaSuccess);
+    // A GPU that shares the RAM (Jetson) keeps released pages in the driver's own pool (nvmap) for its next allocation,
+    // outside the free figure, which follows MemAvailable there: the give-back is not visible from here.
+    int dev = 0, integrated = 0;
+    CHECK(cudaGetDevice(&dev) == cudaSuccess);
+    (void) cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, dev);
     size_t f0 = 0, f1 = 0, t = 0;
     cudaMemGetInfo(&f0, &t);
     a.release();
     b.release();
-    for (int i = 0; i < 20; ++i) {   // the free-memory counter may lag a release by a moment on Windows (WDDM)
+    for (int i = 0; i < (integrated ? 1 : 20); ++i) {   // the free-memory counter may lag a release by a moment on Windows (WDDM)
         cudaMemGetInfo(&f1, &t);
         if (f1 >= f0 + 8 * G) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    CHECK(f1 >= f0 + 8 * G);   // 7 + 2 chunks went back (the driver may round)
+    if (!integrated) CHECK(f1 >= f0 + 8 * G);   // 7 + 2 chunks went back (the driver may round)
+    CHECK(a.base() == nullptr && b.base() == nullptr && a.mapped_count() == 0 && b.mapped_count() == 0);
     CHECK(cudaGetLastError() == cudaSuccess);
     std::printf("vmm_test: %s\n", fails ? "FAILED" : "ok");
     return fails ? 1 : 0;
