@@ -5130,6 +5130,8 @@ class JetsonTelemetry(unittest.TestCase):
         freq = root / "class/devfreq/17000000.gpu"
         freq.mkdir(parents=True)
         (freq / "cur_freq").write_text("1300500000\n")
+        (freq / "min_freq").write_text("1300500000\n")                  # jetson_clocks: the lowest clock is the highest
+        (freq / "max_freq").write_text("1300500000\n")
         (root / "class/devfreq/bwmgr").mkdir()
         for n, (kind, temp) in enumerate((("cpu-thermal", "52000"), ("gpu-thermal", "49718"))):
             z = root / f"class/thermal/thermal_zone{n}"
@@ -5149,14 +5151,21 @@ class JetsonTelemetry(unittest.TestCase):
             (hw / "in7_input").write_text("1800\n")
         meminfo = root / "meminfo"
         meminfo.write_text("MemTotal:       64386068 kB\nMemFree:        40000000 kB\nMemAvailable:   48000000 kB\n")
+        (root / "nvpmodel.conf").write_text("< POWER_MODEL ID=0 NAME=MAXN >\n< POWER_MODEL ID=3 NAME=MODE_50W >\n")
+        (root / "nvpmodel.status").write_text("pmode:0000")
         return root, meminfo
+
+    def reader(self, root, meminfo):
+        from serve import telemetry
+        return telemetry._Tegra(0, sysfs=str(root), meminfo=str(meminfo), nvml=self.Nvml(),
+                                nvpmodel_status=str(root / "nvpmodel.status"), nvpmodel_conf=str(root / "nvpmodel.conf"))
 
     def test_readings(self):
         from serve import telemetry
         with tempfile.TemporaryDirectory() as d:
             root, meminfo = self.tree(d)
             self.assertTrue(telemetry._Tegra.present(str(root)))
-            g = telemetry._Tegra(0, sysfs=str(root), meminfo=str(meminfo), nvml=self.Nvml())
+            g = self.reader(root, meminfo)
             self.assertTrue(g.ok())
             self.assertEqual(g.name(), "Orin (nvgpu)")
             r = g.read()
@@ -5166,7 +5175,38 @@ class JetsonTelemetry(unittest.TestCase):
         self.assertAlmostEqual(r["power"], 19.976 * 1.5)
         self.assertEqual(sorted(r["rails"]), ["VDDQ_VDD2_1V8AO", "VDD_CPU_CV", "VDD_GPU_SOC"])
         self.assertAlmostEqual(r["rails"]["VDDQ_VDD2_1V8AO"], 5.064 * 0.38)
+        self.assertAlmostEqual(r["power_total"], 19.976 * 1.5 + 19.976 * 0.6 + 5.064 * 0.38)
+        self.assertEqual((r["cpu_temp"], r["power_mode"], r["clocks_pinned"]), (52, "MAXN", True))
         self.assertIsNone(r["pcie_gen"])
+
+    def test_power_mode_and_dynamic_clocks(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, meminfo = self.tree(d)
+            (root / "nvpmodel.status").write_text("pmode:0003")
+            (root / "class/devfreq/17000000.gpu/min_freq").write_text("306000000\n")
+            r = self.reader(root, meminfo).read()
+            (root / "nvpmodel.status").write_text("pmode:0007")
+            other = self.reader(root, meminfo).read()["power_mode"]
+        self.assertEqual((r["power_mode"], r["clocks_pinned"]), ("MODE_50W", False))
+        self.assertEqual(other, "mode 7")                                  # an id the config does not name
+
+    def test_experts_read_in_place_count_as_memory_in_use(self):
+        """The engine's registered experts (INFO uma_pinned_mib) are page cache to the OS: the sampler adds them back."""
+        from serve import telemetry
+        with tempfile.TemporaryDirectory() as d:
+            root, meminfo = self.tree(d)
+            t = telemetry.Telemetry.__new__(telemetry.Telemetry)
+            g = self.reader(root, meminfo)
+            t.gpus, t.gpu, t.ps, t.extra, t._disk_prev = [(0, g)], g, None, None, None
+            t.fallback = telemetry._CpuRamFallback()
+            t.static = {"unified_memory": True}
+            t.pinned_bytes = 0
+            before = t.sample()["gpu_mem_used"]
+            t.pinned_bytes = 32 << 30
+            s = t.sample()
+        self.assertEqual(s["gpu_mem_used"], before + (32 << 30))
+        self.assertEqual(s["mem_pinned"], 32 << 30)
+        self.assertLessEqual(s["gpu_mem_used"], s["gpu_mem_total"])
 
     def test_a_second_gpu_and_other_machines_get_nothing_from_it(self):
         from serve import telemetry

@@ -350,24 +350,32 @@ class _Tegra:
     """A Jetson's integrated GPU, with _Nvml's interface. NVML names it but reads nothing else there, so the load and
     the clock come from the nvgpu driver's sysfs files, the memory is the system's (the GPU has none of its own), the
     temperature is the gpu-thermal zone and the power the INA3221 monitor's VDD_GPU_SOC rail, which the GPU shares
-    with the SoC. `rails` gives every rail the monitors measure, in watts, by the board's own names."""
-    note = "the GPU shares the RAM, so the memory shown is the system's; the power is the GPU and SoC rail"
+    with the SoC. `rails` gives every rail the monitors measure, in watts, by the board's own names, and `power_total`
+    their sum; the power mode is nvpmodel's (its saved status, named from its config), the clocks pinned when the
+    GPU's lowest clock is its highest (jetson_clocks)."""
+    note = "the GPU shares the RAM, so the memory shown is the system's"
     GPU_RAIL = "VDD_GPU_SOC"
 
-    def __init__(self, index=0, sysfs=SYSFS, meminfo="/proc/meminfo", nvml=None):
+    def __init__(self, index=0, sysfs=SYSFS, meminfo="/proc/meminfo", nvml=None,
+                 nvpmodel_status="/var/lib/nvpmodel/status", nvpmodel_conf="/etc/nvpmodel.conf"):
         self.index = index
         self.meminfo = meminfo
+        self.nvpmodel_status = nvpmodel_status
+        self.power_modes = {int(i): name for i, name in
+                            re.findall(r"<\s*POWER_MODEL\s+ID=(\d+)\s+NAME=(\S+)\s*>", self._text(nvpmodel_conf) or "")}
         self.load = next((p for p in (os.path.join(sysfs, "devices/platform/gpu.0/load"),
                                       os.path.join(sysfs, "devices/platform/bus@0/17000000.gpu/load")) if os.path.isfile(p)), None)
         dev = os.path.join(sysfs, "class/devfreq")
         self.devfreq = next((os.path.join(dev, d) for d in sorted(os.listdir(dev)) if d.endswith(".gpu")), None) \
             if os.path.isdir(dev) else None
-        self.thermal = None
+        self.thermal = self.cpu_thermal = None
         zones = os.path.join(sysfs, "class/thermal")
         for z in sorted(os.listdir(zones)) if os.path.isdir(zones) else []:
-            if self._text(os.path.join(zones, z, "type")) == "gpu-thermal":
+            kind = self._text(os.path.join(zones, z, "type"))
+            if kind == "gpu-thermal" and self.thermal is None:
                 self.thermal = os.path.join(zones, z, "temp")
-                break
+            elif kind == "cpu-thermal" and self.cpu_thermal is None:
+                self.cpu_thermal = os.path.join(zones, z, "temp")
         self.rails = {}                                    # label -> (millivolt file, milliampere file)
         hw = os.path.join(sysfs, "class/hwmon")
         for h in sorted(os.listdir(hw)) if os.path.isdir(hw) else []:
@@ -427,8 +435,17 @@ class _Tegra:
         out["temp"] = temp // 1000 if temp is not None else None
         out["power"] = self._watts(self.GPU_RAIL) if self.GPU_RAIL in self.rails else None
         out["rails"] = {label: self._watts(label) for label in self.rails}
+        watts = [w for w in out["rails"].values() if w is not None]
+        out["power_total"] = sum(watts) if watts else None
+        cpu = self._int(self.cpu_thermal)
+        out["cpu_temp"] = cpu // 1000 if cpu is not None else None
         hz = self._int(os.path.join(self.devfreq, "cur_freq")) if self.devfreq else None
         out["mhz"] = hz // 1_000_000 if hz is not None else None
+        lo, hi = ((self._int(os.path.join(self.devfreq, f)) for f in ("min_freq", "max_freq")) if self.devfreq
+                  else (None, None))
+        out["clocks_pinned"] = lo == hi if lo is not None and hi is not None else None
+        m = re.match(r"pmode:(\d+)", self._text(self.nvpmodel_status) or "")
+        out["power_mode"] = self.power_modes.get(int(m.group(1)), f"mode {int(m.group(1))}") if m else None
         return out
 
 
@@ -567,6 +584,13 @@ def _cpu_name():
         for line in open("/proc/cpuinfo", encoding="utf-8", errors="replace"):
             if line.startswith("model name"):
                 return line.split(":", 1)[1].strip()
+        try:                                       # Arm: no "model name" line; lscpu names the core ("Cortex-A78AE")
+            out = subprocess.run(["lscpu"], capture_output=True, text=True, timeout=5).stdout
+            m = re.search(r"^Model name:\s*(.+)$", out, re.M)
+            if m:
+                return m.group(1).strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
     return platform.processor() or None
 
 
@@ -670,6 +694,13 @@ class Telemetry:
             "numa_nodes": _cpu_topology()[1],
             "psutil": self.ps is not None,
         }
+        if isinstance(self.gpu, _Tegra) and self.gpu.ok():   # a Jetson: the board and its software, for the page
+            from strata_control import nvidia_uma
+            self.static.update(unified_memory=True, board=nvidia_uma.board_name(), soc=nvidia_uma.tegra_soc(),
+                               l4t=nvidia_uma.l4t_release())
+        # bytes the engine pinned for the GPU to read in place (its INFO uma_pinned_mib): the OS lists them as
+        # reclaimable cache, so the memory in use is read short by that much without them
+        self.pinned_bytes = 0
         self._disk_prev = None
         self._stop = threading.Event()
         threading.Thread(target=self._loop, daemon=True).start()
@@ -719,6 +750,12 @@ class Telemetry:
         else:
             s["cpu"] = self.fallback.cpu()
             s["ram_used"], s["ram_total"] = self.fallback.ram()
+        pinned = self.pinned_bytes if self.static.get("unified_memory") else 0
+        if pinned:
+            for k, total in (("gpu_mem_used", "gpu_mem_total"), ("ram_used", "ram_total")):
+                if s.get(k) is not None:
+                    s[k] = min(s[k] + pinned, s.get(total) or s[k] + pinned)
+            s["mem_pinned"] = pinned
         s["disk_read_mb"], s["disk_write_mb"] = self._disk()
         if self.extra:
             try:
@@ -736,8 +773,8 @@ class Telemetry:
             s = self.sample()
             with self.lock:
                 self.now = s
-                for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
-                          "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
+                for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_power_total", "gpu_pcie_rx_mb", "cpu",
+                          "ram_used", "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
             self._stop.wait(1.0)
