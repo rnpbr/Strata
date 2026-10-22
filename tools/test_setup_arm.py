@@ -115,11 +115,14 @@ class InPlacePack(unittest.TestCase):
     ORIN = {"index": 0, "name": "Orin (nvgpu)", "vram_gb": 61.4, "unified_gb": 61.4, "dedicated_gb": 0.0,
             "integrated": True, "uma": True, "arch": "87", "driver": "595.78"}
 
-    def packs(self, ram, gpu):
+    def packs(self, ram, gpu, arm=True):
         import test_setup_golden as golden
         ran = []
-        code, text, _cfg, _asked = golden.install(ram, [gpu], golden.argv_for("qwen", "Q2_0"),
-                                                  extra=[mock.patch.object(setup, "run", lambda cmd, *a, **k: ran.append(cmd))])
+        extra = [mock.patch.object(setup, "run", lambda cmd, *a, **k: ran.append(cmd))]
+        if arm:                                   # the board compiles its engine (stubbed: no compiler here)
+            extra += [mock.patch.object(setup, "arm_host", lambda: True),
+                      mock.patch.object(setup, "build_engine", lambda *a, **k: setup.ROOT / "engine")]
+        code, text, _cfg, _asked = golden.install(ram, [gpu], golden.argv_for("qwen", "Q2_0"), extra=extra)
         self.assertEqual(code, 0, text[-2000:])
         return [c for c in ran if any(str(x).endswith("iq_pack.py") for x in c)], text
 
@@ -133,9 +136,20 @@ class InPlacePack(unittest.TestCase):
         _, text = self.packs(30.6, {**self.ORIN, "vram_gb": 30.6, "unified_gb": 30.6})
         self.assertNotIn("reads them where they lie", text)
 
+    def test_an_arm_board_compiles_its_engine(self):
+        import test_setup_golden as golden
+        built = []
+        code, text, _cfg, _asked = golden.install(61.4, [self.ORIN], golden.argv_for("qwen", "Q2_0"), extra=[
+            mock.patch.object(setup, "arm_host", lambda: True),
+            mock.patch.object(setup, "build_engine", lambda *a, **k: built.append(a) or (setup.ROOT / "engine")),
+            mock.patch.object(setup, "get_prebuilt", mock.Mock(side_effect=AssertionError("no Arm package to fetch")))])
+        self.assertEqual(code, 0, text[-2000:])
+        self.assertTrue(built)
+        self.assertIn("compiled on this machine", text)
+
     def test_a_graphics_card_does_not(self):
         packs, _ = self.packs(64.0, {"index": 0, "name": "NVIDIA GeForce RTX 4090", "vram_gb": 24.0, "arch": "89",
-                                     "driver": "595.78"})
+                                     "driver": "595.78"}, arm=False)
         self.assertFalse(any("--experts-bin" in c for c in packs), packs)
 
 

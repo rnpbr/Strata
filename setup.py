@@ -8291,6 +8291,10 @@ def main() -> int:
             fail("the older-CPU engine is compiled from source, and setup compiles the AMD engine on Linux only",
                  "use Linux for an AMD card on this CPU, or an NVIDIA card")
         a.build = True
+    if arm_host() and not a.build:
+        # no ready-made Arm engine in the feed, and one compiled here also targets this CPU's own NEON (-mcpu=native)
+        ok("64-bit Arm: the engine is compiled on this machine for its GPU and CPU (15-30 minutes, once)")
+        a.build = True
     if a.check:
         say()
         any_fits = False
