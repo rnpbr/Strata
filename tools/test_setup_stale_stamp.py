@@ -72,6 +72,7 @@ class BuildEngineStamp(unittest.TestCase):
                    mock.patch.object(setup, "isa_floor_defs", lambda *a: []),
                    mock.patch.object(setup, "cpu_floor", lambda avx2: ""),
                    mock.patch.object(setup, "cpu_info", lambda: ("cpu", True)),
+                   mock.patch.object(setup, "arm_host", lambda: False),   # an x86-64 PC, whatever runs the test
                    mock.patch.object(setup, "cmake_build", self.fake_build),
                    mock.patch.object(setup, "say", lambda *a, **k: None),
                    mock.patch.object(setup, "ok", lambda *a, **k: None)]

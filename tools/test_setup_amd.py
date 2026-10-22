@@ -450,6 +450,7 @@ class CalibrationKey(unittest.TestCase):
     def setUp(self):
         self.patches = [mock.patch.object(setup, "amd_gpus", lambda *a, **k: [dict(g) for g in self.AMD]),
                         mock.patch.object(setup, "cpu_info", lambda: ("AMD Ryzen 9 7950X", 16)),
+                        mock.patch.object(setup, "arm_host", lambda: False),   # an x86-64 PC, whatever runs the test
                         mock.patch.object(setup, "ram_gb", lambda: 63.6)]
         for p in self.patches:
             p.start()
