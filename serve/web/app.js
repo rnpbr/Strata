@@ -510,13 +510,24 @@ function codeBlock(lang, code) {
 }
 function blocks(text) {
   const out = [], lines = text.split("\n");
-  let para = [], list = null;
+  let para = [], list = null, inItem = false;   // inItem: the last line was an item's, no blank line since
   const flushPara = () => { if (para.length) out.push(`<p>${para.map(inline).join("<br>")}</p>`); para = []; };
-  const flushList = () => { if (list) out.push(`<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join("")}</${list.tag}>`); list = null; };
+  const flushList = () => {
+    if (list) out.push(`<${list.tag}${list.start > 1 ? ` start="${list.start}"` : ""}>${list.items.map((i) => `<li>${i.map(inline).join("<br>")}</li>`).join("")}</${list.tag}>`);
+    list = null;
+  };
+  const ITEM = /^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/;
+  // a blank line between two items of one list keeps it one list ("1. a", "", "2. b" is numbered 1, 2, not 1, 1)
+  const nextItemOfList = (i) => {
+    let j = i + 1;
+    while (j < lines.length && !lines[j].trim()) j++;
+    const m = j < lines.length && lines[j].match(ITEM);
+    return !!(m && list && (m[1] ? "ol" : "ul") === list.tag);
+  };
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     let m;
-    if (!l.trim()) { flushPara(); flushList(); continue; }
+    if (!l.trim()) { flushPara(); inItem = false; if (!nextItemOfList(i)) flushList(); continue; }
     if ((m = l.match(/^(#{1,6})\s+(.*)$/))) { flushPara(); flushList(); out.push(`<${m[1].length <= 2 ? "h3" : "h4"}>${inline(m[2])}</${m[1].length <= 2 ? "h3" : "h4"}>`); continue; }
     if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(l)) { flushPara(); flushList(); out.push("<hr>"); continue; }
     if ((m = l.match(/^>\s?(.*)$/))) { flushPara(); flushList(); out.push(`<blockquote>${inline(m[1])}</blockquote>`); continue; }
@@ -530,14 +541,23 @@ function blocks(text) {
       out.push(html + "</tbody></table>");
       continue;
     }
-    if ((m = l.match(/^\s*(?:[-*+]|(\d+)[.)])\s+(.*)$/))) {
+    if ((m = l.match(ITEM))) {
       flushPara();
       const tag = m[1] ? "ol" : "ul";
-      if (!list || list.tag !== tag) { flushList(); list = {tag, items: []}; }
-      list.items.push(m[2]);
+      if (!list || list.tag !== tag) { flushList(); list = {tag, items: [], start: m[1] ? +m[1] : 1}; }
+      list.items.push([m[2]]);
+      inItem = true;
       continue;
     }
-    if (list && /^\s{2,}\S/.test(l)) { list.items[list.items.length - 1] += " " + l.trim(); continue; }
+    // the item's next line: indented, or right under it with no blank line between (CommonMark's lazy continuation:
+    // "1. **Title**" then its text on the next line is one item, not an item and a paragraph that ends the list)
+    if (list && (inItem || /^\s{2,}\S/.test(l))) {
+      const item = list.items[list.items.length - 1], prev = item[item.length - 1];
+      if (/ {2,}$|\\$/.test(prev)) item.push(l.trim());              // a hard break: "  " or "\" at the line's end
+      else item[item.length - 1] = `${prev} ${l.trim()}`;              // a soft wrap: one line
+      inItem = true;
+      continue;
+    }
     flushList();
     para.push(l);
   }
