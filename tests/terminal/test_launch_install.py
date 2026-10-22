@@ -20,6 +20,10 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "packaging"))
 sys.path.insert(0, str(ROOT))
 import make_local_feed as mlf  # noqa: E402
+from strata_control.targets import host_platform  # noqa: E402
+
+# the terminal archive is built for this machine, so the real install.sh run below finds it (linux-x86_64 or linux-arm64)
+LINUX = host_platform() if host_platform().startswith("linux-") else "linux-x86_64"
 
 
 class Scripts(unittest.TestCase):
@@ -59,7 +63,7 @@ class Scripts(unittest.TestCase):
 class Feed(unittest.TestCase):
     def make_bundle(self, work: Path) -> Path:
         """A tiny terminal archive that is a working `strata` (the repo's own source with the system Python)."""
-        top = work / "bundle" / "strata-terminal-9.9.9-linux-x86_64"
+        top = work / "bundle" / f"strata-terminal-9.9.9-{LINUX}"
         top.mkdir(parents=True)
         for name in ("strata.py", "strata_cli", "strata_control", "serve"):
             src = ROOT / name
@@ -68,7 +72,7 @@ class Feed(unittest.TestCase):
         shutil.copy2(ROOT / "bin" / "strata", top / "bin" / "strata")
         (top / "bin" / "strata").chmod(0o755)
         (top / "VERSION").write_text("9.9.9\n", encoding="utf-8")
-        archive = work / "strata-terminal-9.9.9-linux-x86_64.tar.gz"
+        archive = work / f"strata-terminal-9.9.9-{LINUX}.tar.gz"
         with tarfile.open(archive, "w:gz") as tf:
             tf.add(top, arcname=top.name)
         return archive
@@ -84,7 +88,7 @@ class Feed(unittest.TestCase):
             for name in ("strata-feed.json", "strata-feed.json.sig", "install-manifest.txt", "install.sh", "install.ps1", "test-trust.json"):
                 self.assertTrue((feed / name).is_file(), name)
             line = (feed / "install-manifest.txt").read_text().split()
-            self.assertEqual(line[0], "linux-x86_64")
+            self.assertEqual(line[0], LINUX)
             self.assertEqual(line[1], "9.9.9")
             control = feed / line[2]
             self.assertEqual(hashlib.sha256(control.read_bytes()).hexdigest(), line[3])
@@ -121,7 +125,7 @@ class Feed(unittest.TestCase):
                 # an archive with one top folder (a terminal archive, not the feed's control package) installs too
                 data = archive.read_bytes()
                 (feed / "top.tar.gz").write_bytes(data)
-                (feed / "install-manifest.txt").write_text(f"linux-x86_64 9.9.9 top.tar.gz {hashlib.sha256(data).hexdigest()} {len(data)}" + chr(10))
+                (feed / "install-manifest.txt").write_text(f"{LINUX} 9.9.9 top.tar.gz {hashlib.sha256(data).hexdigest()} {len(data)}" + chr(10))
                 home3 = work / "home3"
                 home3.mkdir()
                 r = subprocess.run(["sh", str(feed / "install.sh")], capture_output=True, text=True, env={**env, "HOME": str(home3)}, timeout=240)
@@ -152,11 +156,11 @@ class Feed(unittest.TestCase):
             release = work / "release"
             feed_tool.keygen(work / "keys")
             key = feed_tool._load_key(work / "keys" / "feed-key.json")
-            entry = feed_tool.pack_control(folder, release / "control", version="9.9.9", platform="linux-x86_64", url_prefix="")
+            entry = feed_tool.pack_control(folder, release / "control", version="9.9.9", platform=LINUX, url_prefix="")
             shutil.move(str(release / "control" / entry["url"]), str(release / entry["url"]))        # GitHub assets are flat
             feed_tool.build_feed(release, key=key, sequence=1, control_dir=release / "control")
             line = (release / "install-manifest.txt").read_text().split()
-            self.assertEqual(line, ["linux-x86_64", "9.9.9", entry["url"], entry["sha256"], str(entry["size"])])
+            self.assertEqual(line, [LINUX, "9.9.9", entry["url"], entry["sha256"], str(entry["size"])])
             self.assertEqual(json.loads((release / "strata-feed.json").read_text())["control"]["packages"][0]["sha256"], entry["sha256"])
             bad = work / "bad"                           # a Windows pack that is not a zip cannot be installed by install.ps1: left out of the manifest
             feed_tool.build_feed(bad, key=key, sequence=1, control_dir=self._windows_tar_pack(folder, work))

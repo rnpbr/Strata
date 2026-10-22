@@ -82,7 +82,8 @@ def main(argv=None) -> int:
             v = version or (folder / "VERSION").read_text(encoding="utf-8").strip()
             version = v
             platform = ("windows-x86_64" if (folder / "python" / "python.exe").exists() else
-                        "macos-arm64" if ("darwin" in term.name or "macos" in term.name) else "linux-x86_64")      # the feed's own platform names
+                        "macos-arm64" if ("darwin" in term.name or "macos" in term.name) else
+                        "linux-arm64" if ("linux-arm64" in term.name or "aarch64" in term.name) else "linux-x86_64")   # the feed's own platform names
             fmt = "zip" if platform.startswith("windows") else "tar.gz"
             entry = ft.pack_control(folder, out / "control", version=v, platform=platform, fmt=fmt)
             print(f"control {platform} {v}: {entry['size'] // 1048576} MB")

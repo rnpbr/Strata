@@ -232,7 +232,7 @@ def build_feed(out: Path, *, key: dict, sequence: int, channel: str = "stable", 
     return document
 
 
-TAURI_TARGET_NAMES = tuple(feedmod.TAURI_TARGETS.values()) + ("linux-aarch64",)
+TAURI_TARGET_NAMES = tuple(feedmod.TAURI_TARGETS.values())
 
 
 def _default_app_pubkey() -> str:
@@ -325,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--expires-days", type=int)
     sa = sub.add_parser("set-app-platform", help="add one signed app installer to the Tauri updater json")
     sa.add_argument("--app-json", type=Path, required=True, help="the file to create or patch (what build-feed --app-json takes)")
-    sa.add_argument("--target", required=True, help="darwin-aarch64, darwin-x86_64, windows-x86_64 or linux-x86_64")
+    sa.add_argument("--target", required=True, help="darwin-aarch64, darwin-x86_64, windows-x86_64, linux-x86_64 or linux-aarch64")
     sa.add_argument("--archive", type=Path, required=True)
     sa.add_argument("--sig", type=Path, required=True, help="the .sig file made by tauri signer sign")
     sa.add_argument("--url", help="where the archive is published (default: the latest GitHub release)")
