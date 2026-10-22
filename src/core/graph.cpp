@@ -1,7 +1,7 @@
 // src/core/graph.cpp - P2.S5: the GraphRegistry implementation.
 #include "strata/core/graph.hpp"
 
-#include <immintrin.h>
+#include "strata/platform/spin.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -88,7 +88,7 @@ bool CapturedGraph::wait_ms(int timeout_ms) const {
     // it does not synchronise - so this satisfies P2.X3 while still giving the driver the call it needs to
     // flush the submission.  See NOTE 1 in the header: without a driver call here the work never starts.
     //
-    // The deadline is a REAL CLOCK, not a count of pause instructions: `_mm_pause` is a few cycles, so
+    // The deadline is a REAL CLOCK, not a count of pause instructions: `spin_pause` is a few cycles, so
     // counting pauses as microseconds would make the timeout tens of times longer than the caller asked for -
     // a timeout that does not time out is worse than none, because it reports a hang as a pass.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -97,7 +97,7 @@ bool CapturedGraph::wait_ms(int timeout_ms) const {
         if (q == cudaSuccess) return true;
         if (q != cudaErrorNotReady) return false;   // a real error, not "not finished"
         if (std::chrono::steady_clock::now() >= deadline) return false;
-        for (int i = 0; i < 64; ++i) _mm_pause();
+        for (int i = 0; i < 64; ++i) strata::platform::spin_pause();
     }
 }
 
