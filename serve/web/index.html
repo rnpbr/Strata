@@ -31,6 +31,7 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
   </nav>
   <span class="st-header__spacer"></span>
+  <span class="st-device" id="device" hidden><svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-gpu"/></svg><span id="device-text"></span></span>
   <span class="st-pill" id="pill" data-state="idle" role="status" aria-live="polite">
     <span class="st-pill__dot"></span><span id="pill-text">Connecting&hellip;</span></span>
   <button class="st-btn st-btn--icon" id="theme-btn" title="Light / dark" aria-label="Switch between light and dark">
@@ -45,10 +46,23 @@
         <div class="chat-empty" id="chat-empty">
           <div class="chat-empty__title">Ask anything</div>
           <div class="chat-empty__sub" id="chat-empty-sub">The model runs on this PC. Nothing leaves it.</div>
+          <div class="chat-suggest" id="chat-suggest">
+            <button type="button" class="st-chip-btn" data-prompt="Explain in a short paragraph how BGP chooses the best route between autonomous systems.">How does BGP pick a route?</button>
+            <button type="button" class="st-chip-btn" data-prompt="Write a Python function that returns the prime numbers up to N with the sieve of Eratosthenes, with comments and an example.">Write a prime sieve in Python</button>
+            <button type="button" class="st-chip-btn" data-prompt="List five advantages of running a large language model on an edge device instead of in the cloud.">Why run an LLM at the edge?</button>
+            <button type="button" class="st-chip-btn" data-prompt="Explique em português, em três tópicos, o que é uma rede definida por software (SDN).">Uma pergunta em português</button>
+          </div>
         </div>
       </div>
     </div>
     <div class="composer-wrap">
+      <form class="key-ask" id="key-ask" hidden
+            title="This server was started with an API key, a password for everyone who uses it. This browser keeps it after you save it.">
+        <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>
+        <label for="key-ask-input" id="key-ask-label">Protected server: paste its API key</label>
+        <input class="st-input" id="key-ask-input" type="password" autocomplete="off" placeholder="API key">
+        <button class="st-btn st-btn--primary" type="submit" id="key-ask-save">Unlock</button>
+      </form>
       <form class="st-composer" id="composer">
         <div class="attachments" id="attachments" hidden></div>
         <textarea id="input" rows="2" placeholder="Ask anything&hellip;" aria-label="Message"></textarea>
@@ -128,9 +142,9 @@
             </svg>
             <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="ctx-pct">0%</span><span class="muted" id="ctx-sub">&ndash;</span></div>
           </div>
-          <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
+          <div class="bar-row"><span id="slots-label">Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
           <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
-          <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
+          <div class="bar-row"><span id="ram-label">System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
           <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
           <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
           <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-bar" style="width:0%"></div></div>
@@ -141,8 +155,8 @@
           <div class="table-wrap" id="req-wrap">
             <table class="st-table">
               <thead><tr><th>Time</th><th>Status</th><th class="num">Prompt</th><th class="num">Reused</th><th class="num">Output</th>
-                <th class="num" title="New prompt tokens per second, excluding reused cache tokens (engine prompt time)">Prefill t/s</th><th class="num">Decode t/s</th><th class="num" title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)">VRAM hit rate</th><th class="num">Duration</th></tr></thead>
-              <tbody id="req-body"><tr><td colspan="9" class="muted">No requests yet</td></tr></tbody>
+                <th class="num" title="New prompt tokens per second, excluding reused cache tokens (engine prompt time)">Prefill t/s</th><th class="num">Decode t/s</th><th class="num col-hit" title="While writing the answer: the share of the experts looked up that were already in VRAM. Experts the GPU read over PCIe (--pcie-frac) are not counted in it; their share of all routed experts is shown after it (+N% PCIe)">VRAM hit rate</th><th class="num col-energy" title="Tokens per joule while the answer was written: the engine's decode speed over the board's mean power (all measured rails)">tok/J</th><th class="num">Duration</th></tr></thead>
+              <tbody id="req-body"><tr><td colspan="10" class="muted">No requests yet</td></tr></tbody>
             </table>
           </div>
           <p class="muted req-totals" id="req-totals"></p>
@@ -178,7 +192,7 @@
         <dl class="facts" id="facts-engine"></dl>
       </div>
       <div class="st-card">
-        <span class="card-title">This PC</span>
+        <span class="card-title" id="hw-title">This PC</span>
         <dl class="facts" id="facts-hw"></dl>
       </div>
       <div class="st-card">
@@ -189,13 +203,14 @@
       <div class="st-card">
         <span class="card-title">Settings</span>
         <div class="st-field">
-          <label class="st-label" for="api-key">API key <output>only if the server was started with one</output></label>
-          <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="Not needed">
+          <label class="st-label" for="api-key">API key <output id="api-key-note">only if the server was started with one</output></label>
+          <input class="st-input" id="api-key" type="password" autocomplete="off" placeholder="">
         </div>
         <div class="toggle-row"><span>Dark theme</span>
           <button class="st-toggle" id="dark-toggle" role="switch" aria-checked="false" aria-label="Dark theme"></button></div>
         <p class="muted small">Chats, settings and the key are kept in this browser only.
-          <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a></p>
+          <a href="https://github.com/Niko1221/Strata" target="_blank" rel="noopener noreferrer">Strata on GitHub</a> ·
+          <a href="https://github.com/rnpbr/Strata/tree/jetson-arm64" target="_blank" rel="noopener noreferrer">RNP's Jetson port</a></p>
       </div>
       <div class="st-card cfg-card" id="cfg-card" hidden>
         <div class="req-head"><span class="card-title">Model settings</span><span class="muted small" id="cfg-file"></span></div>

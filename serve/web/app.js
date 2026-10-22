@@ -95,16 +95,86 @@ function headers(json = false) {
   return h;
 }
 $("api-key").value = store.get("apikey", "");
-$("api-key").onchange = () => { store.set("apikey", $("api-key").value.trim()); toast("success", "API key saved", "Kept in this browser only."); };
+// A server started with --api-key (on a network) answers 401 without it. Until this browser has a key the server
+// accepts, the chat is locked (nothing can be typed or sent) and the key is asked for in its place; a key is checked
+// against the server before it is kept, so a wrong one never unlocks the chat.
+let locked = false;
+function setLocked(on, why = "") {
+  locked = on;
+  // every control of the composer: nothing to type, attach, start, save or tune until the server answers this browser
+  for (const id of ["input", "attach-btn", "new-btn", "export-btn", "sampling-btn", "send-btn"]) {
+    $(id).disabled = on || (id === "send-btn" && !!busy);
+  }
+  $("input").placeholder = on ? "Enter this server's API key above to start" : "Ask anything\u2026";
+  $("composer-hint").textContent = on || busy ? "" : "Shift+Enter: new line";
+  $("composer").classList.toggle("is-locked", on);
+  $("chat-suggest").classList.toggle("is-locked", on);
+  for (const b of document.querySelectorAll("#chat-suggest .st-chip-btn")) b.disabled = on;
+  $("key-ask").hidden = !on;
+  if (on) keyMessage(why || "Protected server: paste its API key to start", !!why);
+}
+function keyMessage(text, error = false) {
+  $("key-ask-label").textContent = text;
+  $("key-ask").classList.toggle("is-error", error);
+}
+function askKey(wrong = false) {
+  setLocked(true, wrong ? "The saved API key is not this server's: paste the right one" : "");
+  if (tab === "chat") $("key-ask-input").focus();
+}
+async function tryKey(k) {
+  const btn = $("key-ask-save");
+  btn.disabled = true;
+  keyMessage("Checking the key\u2026");
+  try {
+    const r = await fetch("metrics", {headers: {Authorization: "Bearer " + k}});
+    if (r.status === 401) {
+      keyMessage("That key is not this server's. Check it and try again", true);
+      $("key-ask-input").select();
+      return false;
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } catch (e) {
+    keyMessage("The server did not answer. Try again in a moment", true);
+    return false;
+  } finally {
+    btn.disabled = false;
+  }
+  store.set("apikey", k);
+  $("api-key").value = k;
+  keyWarned = false;
+  setLocked(false);
+  toast("success", "Unlocked", "The key is kept in this browser only.");
+  $("input").focus();
+  return true;
+}
+$("api-key").onchange = () => { const k = $("api-key").value.trim(); if (k) tryKey(k); else store.set("apikey", ""); };
+$("key-ask").onsubmit = async (e) => {
+  e.preventDefault();
+  const k = $("key-ask-input").value.trim();
+  if (k && await tryKey(k)) $("key-ask-input").value = "";
+};
+$("key-ask-input").addEventListener("input", () => { if ($("key-ask").classList.contains("is-error")) keyMessage("Protected server: paste its API key to start"); });
+
 
 let health = {model: "strata", images: false, max_context: 0};
+// the model's id as people read it: "qwen3.8-flash-next-q2_0" -> "Qwen3.8-Flash-Next Q2_0"
+function modelName(id) {
+  const parts = String(id || "").split("-");
+  const quant = /^(i?q\d|ud$|nvfp4|bf16|f16|tq\d)/i;
+  const k = parts.findIndex((w, i) => i > 0 && quant.test(w));
+  const words = (k < 0 ? parts : parts.slice(0, k)).map((w) => w.charAt(0).toUpperCase() + w.slice(1));
+  return words.join("-") + (k < 0 ? "" : " " + parts.slice(k).join("-").toUpperCase());
+}
 async function loadHealth() {
   try {
     health = await (await fetch("health")).json();
     $("attach-btn").title = health.images ? "Attach a text file or a picture (or drop it here)"
                                           : "Attach a text file (or drop it here)";
-    $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
+    $("chat-empty-sub").textContent = `${modelName(health.model)} runs on this ${boardShown ? boardName(boardShown) : "PC"}. Nothing leaves it.`;
     $("tab-btn-images").hidden = !health.image_generation;
+    $("api-key").placeholder = health.api_key ? "Required by this server" : "Not needed on this server";
+    $("api-key-note").textContent = health.api_key ? "this server requires one" : "this server does not ask for one";
+    if (health.api_key && !store.get("apikey", "")) askKey();
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
     setTimeout(loadHealth, 2000);
@@ -124,7 +194,7 @@ const METRICS = [
 ];
 $("metrics").innerHTML = METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
-    <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
+    <span class="st-metric__label" id="ml-${m.key}">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
     ${m.key === "speed" ? `<div class="speed-values">
       <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
       <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
@@ -148,6 +218,16 @@ function spark(id, values, max) {
   svg.querySelector(".line").setAttribute("d", line);
   svg.querySelector(".area").setAttribute("d", `${line}L100,32L0,32Z`);
 }
+function setLabel(key, name, text) {
+  const el = $(`ml-${key}`);
+  if (el.dataset.text !== text) { el.dataset.text = text; el.innerHTML = `${icon(name, "st-icon st-icon--sm")}${esc(text)}`; }
+}
+// "NVIDIA Jetson AGX Orin Developer Kit" -> "Jetson AGX Orin"
+const boardName = (b) => (b || "").replace(/^NVIDIA\s+/, "").replace(/\s+(Developer Kit|Dev Kit)$/i, "") || null;
+// a Jetson / DGX Spark: tokens per joule. While an answer is written, the mean speed over the mean board power so far;
+// after it, the server's figure for that answer (the same as its footer and the requests table)
+let effLast = null, effPrev = "idle", effTok = [], effW = [];
+const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
 function setMetric(key, value, unit, sub) {
   $(`mv-${key}`).innerHTML = value == null ? "–" : `${esc(value)}${unit ? `<small>${esc(unit)}</small>` : ""}`;
   $(`ms-${key}`).textContent = sub || "";
@@ -160,7 +240,10 @@ async function poll() {
     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
     if (r.status === 401) {
       setPill("error", "API key needed");
-      if (!keyWarned) { keyWarned = true; toast("warn", "API key needed", "This server needs a key: add it under About > Settings.", 6000); }
+      if (!keyWarned) {
+        keyWarned = true;
+        askKey(!!store.get("apikey", ""));
+      }
     } else if (r.ok) {
       lastMetrics = await r.json();
       metricsFailures = 0;
@@ -180,9 +263,18 @@ function setPill(state, text) {
   $("pill-text").textContent = text;
 }
 
+let boardShown = false;
 function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
+  if (st.unified_memory) {
+    $("device").hidden = false;
+    $("device-text").textContent = [boardName(st.board) || st.gpu_name, hw.gpu_power_mode].filter(Boolean).join(" · ");
+    if (!boardShown && st.board) {
+      boardShown = st.board;
+      $("chat-empty-sub").textContent = `${modelName(health.model)} runs on this ${boardName(st.board)}. Nothing leaves it.`;
+    }
+  }
   // the header pill
   if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
@@ -237,7 +329,7 @@ function renderTotals(t) {
   const read = t.prompt_tokens - t.reused;
   const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
   const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
-  return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
+  return `Since ${since}: ${fmt(t.requests)} request${t.requests === 1 ? "" : "s"} · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
@@ -281,24 +373,52 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
   const per = (f) => (hw.gpus || []).map((g) => `GPU ${g.index} ${f(g)}`).join(" · ");
   const multi = (hw.gpus || []).length > 1;
+  const uma = !!st.unified_memory, pinned = hw.mem_pinned || 0;
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
-            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? "not available" : ""));
+            multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`))
+                  : uma ? `${boardName(st.board) || st.gpu_name}${hw.gpu_mhz ? ` · ${fmt(hw.gpu_mhz)} MHz` : ""}`
+                  : st.gpu_name || (st.gpu_note ? "not available" : ""));
   spark("sp-gpu", h.gpu_util, 100);
+  setLabel("vram", uma ? "memory" : "layers", uma ? "Memory" : "VRAM");
   setMetric("vram", hw.gpu_mem_used == null ? null : gb(hw.gpu_mem_used), hw.gpu_mem_total ? `/ ${gb(hw.gpu_mem_total, 0)} GB` : "GB",
             multi ? per((g) => (g.mem_used == null ? "–" : `${gb(g.mem_used)} GB`))
+                  : uma ? (pinned ? `shared by CPU and GPU · ${gb(pinned)} GB of experts in place` : "shared by CPU and GPU")
                   : eng.expert_slots ? `${fmt(eng.expert_slots)} experts cached` : (st.gpu_note ? "not available on Windows AMD yet" : ""));
   spark("sp-vram", h.gpu_mem_used, hw.gpu_mem_total);
   setMetric("temp", hw.gpu_temp == null ? null : fmt(hw.gpu_temp), "°C",
-            multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : "");
+            multi ? per((g) => (g.temp == null ? "–" : `${fmt(g.temp)}°`)) : hw.gpu_cpu_temp != null ? `CPU ${fmt(hw.gpu_cpu_temp)} °C` : "");
   spark("sp-temp", h.gpu_temp, 90);
-  setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
-  spark("sp-power", h.gpu_power, hw.gpu_power_limit);
+  if (uma && hw.gpu_power_total != null) {
+    setLabel("power", "bolt", "Board power");
+    const mode = hw.gpu_power_mode ? ` · ${hw.gpu_power_mode}${hw.gpu_clocks_pinned ? ", clocks pinned" : ""}` : "";
+    setMetric("power", fmt(hw.gpu_power_total), "W", `GPU+SoC ${fmt(hw.gpu_power, 1)} W${mode}`);
+    spark("sp-power", h.gpu_power_total);
+  } else {
+    setMetric("power", hw.gpu_power == null ? null : fmt(hw.gpu_power), "W", hw.gpu_power_limit ? `of ${fmt(hw.gpu_power_limit)} W limit` : "");
+    spark("sp-power", h.gpu_power, hw.gpu_power_limit);
+  }
+  if (uma && hw.gpu_power_total != null) {
+    setLabel("pcie", "gauge", "Efficiency");
+    const gen = live.state === "generating";
+    if (gen && effPrev !== "generating") { effTok = []; effW = []; }
+    if (gen) { if (live.tok_s) effTok.push(live.tok_s); effW.push(hw.gpu_power_total); }
+    effPrev = live.state;
+    if (last && last.tok_per_j != null) effLast = last.tok_per_j;
+    const effRun = gen && effTok.length && mean(effW) ? mean(effTok) / mean(effW) : null;
+    const shown = gen ? effRun : effLast;
+    setMetric("pcie", shown == null ? null : fmt(shown, 2), "tok/J",
+              gen ? "tokens per joule, this answer" : shown == null ? "measured while an answer is written" : "tokens per joule, last answer");
+    // one point per answer, oldest first: how the answers compare, not a curve that falls to zero between them
+    spark("sp-pcie", requests.filter((r) => r.tok_per_j != null).map((r) => r.tok_per_j).reverse());
+  } else {
   const gen = hw.gpu_pcie_gen_max || hw.gpu_pcie_gen;
   setMetric("pcie", gen ? `Gen${gen}` : null, hw.gpu_pcie_width ? `x${hw.gpu_pcie_width}` : "",
             hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
             (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
   spark("sp-pcie", h.gpu_pcie_rx_mb);
-  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
+  }
+  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${uma && st.cpu_name ? `${st.cores || st.threads} × ${st.cpu_name}`
+            : `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads`}` : "");
   spark("sp-cpu", h.cpu, 100);
   if (hw.disk_read_mb == null) {
     setMetric("disk", null, "", st.psutil ? "" : "needs psutil (setup installs it)");
@@ -320,6 +440,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("ctx-pct").textContent = `${Math.round(frac * 100)}%`;
   $("ctx-sub").textContent = ctx ? `${kfmt(used)} / ${ctxfmt(ctx)}` : "–";
   const cacheBytes = (eng.expert_cache_mib || 0) * 1048576;
+  $("slots-label").textContent = pinned ? "Experts read in place" : "Experts in VRAM";
+  $("ram-label").textContent = uma ? "Memory in use" : "System RAM";
   $("slots-text").textContent = eng.expert_slots ? `${fmt(eng.expert_slots)} · ${gb(cacheBytes)} GB` : "–";
   $("slots-bar").style.width = hw.gpu_mem_total ? `${Math.min(100, (100 * cacheBytes) / hw.gpu_mem_total)}%` : "0%";
   $("ram-text").textContent = hw.ram_total ? `${gb(hw.ram_used)} / ${gb(hw.ram_total, 0)} GB` : "–";
@@ -329,10 +451,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
   $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
 
-  // recent requests
+  // recent requests (in place every expert is read by the GPU: no hit rate to show)
+  $("req-wrap").classList.toggle("no-hit", !!pinned);
+  $("req-wrap").classList.toggle("no-energy", !requests.some((r) => r.tok_per_j != null));
   const body = $("req-body");
   if (!requests.length) {
-    body.innerHTML = `<tr><td colspan="9" class="muted">No requests yet</td></tr>`;
+    body.innerHTML = `<tr><td colspan="10" class="muted">No requests yet</td></tr>`;
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
@@ -348,7 +472,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       const prefillRate = fresh > 0 && r.prompt_ms > 0 ? fresh / (r.prompt_ms / 1000) : null;
       return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
-        <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
+        <td class="num col-hit">${hit}</td><td class="num col-energy" title="${r.power_w != null ? `${fmt(r.power_w)} W` : ""}">${r.tok_per_j != null ? fmt(r.tok_per_j, 2) : "–"}</td>
+        <td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
   }
   const all = $("req-all");
@@ -375,16 +500,29 @@ function projectionText(c) {
 function renderAbout(eng, hw, st) {
   const kv = {int8: "8-bit", q4_0: "4-bit (Hadamard-rotated)", fp16: "16-bit"}[eng.kv] || eng.kv;
   facts($("facts-engine"), [
-    ["Model", eng.model],
+    ["Model", eng.model ? modelName(eng.model) : null],
     ["Engine", eng.version ? `v${eng.version}` : "built from source"],
     ["Context", eng.max_context ? `${fmt(eng.max_context)} tokens` : null],
-    ["KV cache", kv ? `${kv}${eng.kv_resident ? `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM` : ", all in VRAM"}` : null],
-    ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
+    ["KV cache", kv ? `${kv}${eng.kv_resident
+      ? (st.unified_memory ? `, ${fmt(eng.kv_resident)} positions per layer resident, the rest streamed`
+                           : `, streamed: ${fmt(eng.kv_resident)} positions per layer in VRAM, the rest in RAM`)
+      : st.unified_memory ? "" : ", all in VRAM"}` : null],
+    eng.uma_pinned_mib
+      ? ["Experts", `${fmt(eng.expert_slots)}, read in place by the GPU (${gb(eng.uma_pinned_mib * 1048576)} GB registered, nothing copied)`]
+      : ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
     ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],
     ["Experimental speed projection", projectionText(eng.cvec)],
   ]);
-  facts($("facts-hw"), [
+  $("hw-title").textContent = st.unified_memory ? "This device" : "This PC";
+  facts($("facts-hw"), st.unified_memory ? [
+    ["Board", st.board],
+    ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mhz ? `, ${fmt(hw.gpu_mhz)} MHz` : ""}` : null],
+    ["CPU", st.cpu_name ? `${st.cores || st.threads} × ${st.cpu_name}` : null],
+    ["Memory", hw.gpu_mem_total ? `${gb(hw.gpu_mem_total, 0)} GB, shared by the CPU and the GPU` : null],
+    ["Power mode", hw.gpu_power_mode ? `${hw.gpu_power_mode}${hw.gpu_clocks_pinned ? ", clocks pinned (jetson_clocks)" : ", dynamic clocks"}` : null],
+    ["Jetson Linux", st.l4t],
+  ] : [
     ["GPU", st.gpu_name ? `${st.gpu_name}${hw.gpu_mem_total ? `, ${gb(hw.gpu_mem_total, 0)} GB` : ""}` : (st.gpu_note || "not readable (NVML)")],
     ["CPU", st.cpu_name ? `${st.cpu_name}${st.threads ? `, ${st.threads} threads` : ""}` : null],
     ["RAM", hw.ram_total ? `${gb(hw.ram_total, 0)} GB` : null],
@@ -797,13 +935,13 @@ function assistantMessages(m) {
 
 function setBusy(on) {
   $("stop-btn").hidden = !on;
-  $("send-btn").disabled = on;
+  $("send-btn").disabled = on || locked;
   $("composer-hint").textContent = on ? "" : "Shift+Enter: new line";
 }
 
 async function send() {
   const text = $("input").value.trim();
-  if ((!text && !attachments.length) || busy) return;
+  if ((!text && !attachments.length) || busy || locked) return;
   messages.push({role: "user", text, images: attachments.filter((a) => a.kind !== "file"),
                  files: attachments.filter((a) => a.kind === "file"), time: Date.now()});
   attachments = [];
@@ -830,7 +968,7 @@ async function send() {
   if (projectionLoaded()) body.experimental_speed_projection = !!settings.esp;
   if (settings.mcp !== false && mcpInfo.tools > 0) body.strata_mcp = true;   // this server may run MCP tools for it
 
-  let firstAt = null, thinkStart = null, usage = null, frame = 0;
+  let firstAt = null, thinkStart = null, usage = null, timings = null, frame = 0;
   const paint = () => { frame = 0; updateAssistant(el, m, true); scrollDown(); };
   try {
     const r = await fetch("v1/chat/completions", {method: "POST", headers: headers(true), body: JSON.stringify(body),
@@ -838,7 +976,7 @@ async function send() {
     if (!r.ok) {
       let msg = `HTTP ${r.status}`;
       try { msg = (await r.json()).error.message || msg; } catch (e) { /* not json */ }
-      if (r.status === 401) msg = "This server needs an API key: add it under About > Settings.";
+      if (r.status === 401) { msg = "This server needs its API key: paste it in the box above the message."; askKey(!!store.get("apikey", "")); }
       throw new Error(msg);
     }
     const reader = r.body.getReader(), dec = new TextDecoder();
@@ -858,6 +996,7 @@ async function send() {
         try { j = JSON.parse(data); } catch (e) { continue; }
         if (j.error) throw new Error(j.error.message || "the engine reported an error");
         if (j.usage) usage = j.usage;
+        if (j.timings) timings = j.timings;
         if (j.strata_mcp) onTool(m, j.strata_mcp);
         const d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
         const lastTool = m.tools && m.tools.length ? m.tools[m.tools.length - 1] : null;   // a new round after a tool
@@ -883,8 +1022,12 @@ async function send() {
   if (thinkStart && m.thinkSecs == null) m.thinkSecs = (performance.now() - thinkStart) / 1000;
   const n = usage ? usage.completion_tokens : null;
   if (n && firstAt) {
-    const secs = (performance.now() - firstAt) / 1000;
-    m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${m.stopped ? " · stopped" : ""}` +
+    // the engine's decode speed when the stream carried it (the Monitor shows the same), else this page's timing
+    const secs = timings && timings.predicted_per_second > 0 ? n / timings.predicted_per_second
+                                                             : (performance.now() - firstAt) / 1000;
+    // a board that measures its own power (a Jetson): the server's mean watts over this answer, and tokens per joule
+    const energy = timings && timings.power_w ? ` · ${fmt(timings.power_w)} W · ${fmt(timings.tok_per_j, 2)} tok/J` : "";
+    m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${energy}${m.stopped ? " · stopped" : ""}` +
              (projectionLoaded() ? (settings.esp ? " · projection on" : " · projection off") : "");
   } else if (m.stopped) {
     m.meta = "Stopped";
@@ -902,6 +1045,12 @@ async function send() {
 }
 
 $("composer").onsubmit = (e) => { e.preventDefault(); send(); };
+$("chat-suggest").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-prompt]");
+  if (!b || busy || locked) return;
+  $("input").value = b.dataset.prompt;
+  send();
+});
 $("stop-btn").onclick = () => { if (busy) busy.controller.abort(); };
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
@@ -993,7 +1142,7 @@ $("attach-btn").onclick = () => $("file").click();
 for (const id of ["chat", "composer"]) {
   const el = $(id);
   el.addEventListener("dragover", (e) => {
-    if (![...(e.dataTransfer || {}).types || []].includes("Files")) return;
+    if (locked || ![...(e.dataTransfer || {}).types || []].includes("Files")) return;
     e.preventDefault();
     $("composer").classList.add("dragging");
   });
@@ -1001,7 +1150,8 @@ for (const id of ["chat", "composer"]) {
   el.addEventListener("drop", (e) => {
     $("composer").classList.remove("dragging");
     if (!e.dataTransfer || !e.dataTransfer.files.length) return;
-    e.preventDefault();
+    e.preventDefault();                            // (a locked page drops nothing, and the browser does not open it)
+    if (locked) return;
     addFiles(e.dataTransfer.files);
     $("input").focus();
   });

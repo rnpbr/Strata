@@ -197,3 +197,37 @@ main { flex: 1; min-height: 0; display: flex; }
 .img-results figure{margin:0}
 .img-results img{max-width:100%;border-radius:var(--st-r-lg);display:block}
 .img-results figcaption{font-size:var(--st-fs-sm, 13px);color:var(--st-ink-2, inherit);margin-top:4px}
+
+/* a board whose GPU shares the RAM (Jetson): the device in the header, the hit-rate column hidden */
+.st-device { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; margin-right: var(--st-s-2);
+  border-radius: var(--st-r-pill); border: 1px solid var(--st-line); background: var(--st-surface-2);
+  font-size: var(--st-fs-sm); font-weight: 500; color: var(--st-ink-soft); white-space: nowrap; }
+.no-hit .col-hit, .no-energy .col-energy { display: none; }
+/* the empty chat's suggested prompts */
+.chat-suggest { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--st-s-2); margin: var(--st-s-5) auto 0;
+  max-width: 720px; }
+.st-chip-btn { border: 1px solid var(--st-line); background: var(--st-surface); color: var(--st-ink-soft); border-radius: var(--st-r-pill);
+  padding: 8px 14px; font: inherit; font-size: var(--st-fs-sm); cursor: pointer; transition: border-color .15s, color .15s; }
+.st-chip-btn:hover, .st-chip-btn:focus-visible { border-color: var(--st-accent); color: var(--st-ink); }
+@media (max-width: 720px) { .st-device { display: none; } }
+/* the API key asked for above the composer, when the server is protected and this browser has none (or a wrong one) */
+.key-ask { display: flex; align-items: center; gap: var(--st-s-2); max-width: 860px; margin: 0 auto var(--st-s-2);
+  padding: 6px 6px 6px var(--st-s-4); background: var(--st-surface); border: 1px solid var(--st-line);
+  border-radius: var(--st-r-lg); font-size: var(--st-fs-sm); color: var(--st-ink-soft); }
+.key-ask[hidden] { display: none; }
+.key-ask label { white-space: nowrap; }
+.key-ask .st-input { flex: 1; min-width: 0; height: 34px; }
+.key-ask .st-btn { height: 34px; }
+@media (max-width: 640px) {
+  .key-ask { flex-wrap: wrap; padding: var(--st-s-3); }
+  .key-ask label { white-space: normal; flex: 1 1 calc(100% - 28px); }
+  .key-ask .st-input { flex: 1 1 auto; }
+}
+/* locked until the server's key is in: the composer and the suggestions are visibly out of reach */
+.st-composer.is-locked { opacity: .55; }
+.st-composer.is-locked textarea { cursor: not-allowed; }
+.chat-suggest.is-locked .st-chip-btn { opacity: .5; cursor: not-allowed; }
+.chat-suggest.is-locked .st-chip-btn:hover { border-color: var(--st-line); color: var(--st-ink-soft); }
+.key-ask.is-error { border-color: var(--st-danger); }
+.key-ask.is-error label { color: var(--st-danger-text); }
+.st-btn:disabled { cursor: not-allowed; }
