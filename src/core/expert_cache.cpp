@@ -1,5 +1,6 @@
 // src/core/expert_cache.cpp - R4's slot storage and residency table.  Read the header first.
 #include "strata/core/expert_cache.hpp"
+#include "strata/core/expert_source.hpp"   // detail::host_available_memory
 
 // #533's segmented cache uses CUDA's virtual memory management (cuMem*): not on HIP, neither the RDNA backend nor
 // the gfx906 compat build (PR #638), which compiles this file as HIP without STRATA_USE_HIP
@@ -24,6 +25,19 @@
 
 namespace strata::core {
 
+namespace {
+std::atomic<uint64_t> g_uma_pinned{0};
+}
+
+void uma_pinned_add(int64_t bytes) {
+    if (bytes >= 0)
+        g_uma_pinned.fetch_add((uint64_t) bytes, std::memory_order_relaxed);
+    else
+        g_uma_pinned.fetch_sub((uint64_t) -bytes, std::memory_order_relaxed);
+}
+
+uint64_t uma_pinned_bytes() { return g_uma_pinned.load(std::memory_order_relaxed); }
+
 // See the header.  NVIDIA's DGX Spark Porting Guide (section 5.5, "Memory reporting on UMA systems") recommends the same:
 // not to rely on cudaMemGetInfo alone but to count the memory the OS can reclaim.  Swap is not counted here (unlike
 // NVIDIA's reference snippet): an expert cache that pushes the system into swap would be far slower than a smaller one.
@@ -46,26 +60,30 @@ size_t device_free_bytes() {
         }
     }
     if (unified_memory) {
-        if (FILE* m = std::fopen("/proc/meminfo", "r")) {
-            char line[256];
-            unsigned long long kb = 0;
-            while (std::fgets(line, sizeof line, m))
-                if (std::sscanf(line, "MemAvailable: %llu kB", &kb) == 1) break;
-            std::fclose(m);
-            // STRATA_UMA_HEADROOM_GIB: a whole number of GiB, 0..1024; anything else keeps the default 6 (said once)
-            static const long gib = [] {
-                const char* h = std::getenv("STRATA_UMA_HEADROOM_GIB");
-                if (h == nullptr) return 6L;
-                char* end = nullptr;
-                const long v = std::strtol(h, &end, 10);
-                if (end != h && *end == '\0' && v >= 0 && v <= 1024) return v;
-                std::fprintf(stderr, "strata: STRATA_UMA_HEADROOM_GIB=%s is not a whole number of GiB (0-1024): using 6\n", h);
-                return 6L;
-            }();
-            const unsigned long long head = (unsigned long long) gib << 30;
-            const unsigned long long avail = kb << 10;
-            if (avail > head && avail - head > free_b) free_b = (size_t) (avail - head);
-        }
+        // STRATA_UMA_HEADROOM_GIB: a whole number of GiB, 0..1024; anything else keeps the default 6 (said once)
+        static const unsigned long long head = [] {
+            const char* h = std::getenv("STRATA_UMA_HEADROOM_GIB");
+            if (h == nullptr) return 6ull << 30;
+            char* end = nullptr;
+            const long v = std::strtol(h, &end, 10);
+            if (end != h && *end == '\0' && v >= 0 && v <= 1024) return (unsigned long long) v << 30;
+            std::fprintf(stderr, "strata: STRATA_UMA_HEADROOM_GIB=%s is not a whole number of GiB (0-1024): using 6\n", h);
+            return 6ull << 30;
+        }();
+        // Pages pinned for the GPU to read in place (uma_experts.hpp) are still listed as reclaimable cache.
+        const unsigned long long pinned = uma_pinned_bytes();
+        detail::HostMemory hm;
+        const bool known = detail::host_available_memory(hm);   // MemAvailable, within the cgroup's limit
+        const unsigned long long avail = known && hm.available > pinned ? hm.available - pinned : 0;
+#if !defined(STRATA_USE_HIP)
+        // NVIDIA: the RAM the OS can hand out, less the headroom, never past the driver's total. The driver's free
+        // figure is not used: on a DGX Spark it leaves out the reclaimable cache, and on a Jetson (JetPack 7.2, AGX
+        // Orin) it follows MemAvailable and counts the pinned pages, so taking the larger of the two, as below, never
+        // applied the headroom there.
+        if (known) free_b = (size_t) std::min<unsigned long long>(avail > head ? avail - head : 0, total_b);
+#else
+        if (avail > head && avail - head > free_b) free_b = (size_t) (avail - head);
+#endif
     }
 #endif
     return free_b;
@@ -595,6 +613,57 @@ bool ExpertCache::open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_l
     return true;
 }
 
+bool ExpertCache::open_in_place(const std::vector<const uint8_t*>& blob, const std::vector<int64_t>& layer_bytes,
+                                int64_t n_layers, int64_t n_expert, std::string& err) {
+    close();
+    const size_t n = (size_t) (n_layers * n_expert);
+    if (n_layers <= 0 || n_expert <= 0 || blob.size() != n || layer_bytes.size() != (size_t) n_layers) {
+        err = "ExpertCache: an in-place arena needs one address per expert and one blob size per layer";
+        return false;
+    }
+    const uint8_t* lo = nullptr;
+    const uint8_t* hi = nullptr;
+    int64_t mx = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (blob[i] == nullptr) {
+            err = "ExpertCache: expert " + std::to_string(i % (size_t) n_expert) + " of layer " +
+                  std::to_string(i / (size_t) n_expert) + " has no GPU address";
+            return false;
+        }
+        const int64_t b = layer_bytes[i / (size_t) n_expert];
+        if (lo == nullptr || blob[i] < lo) lo = blob[i];
+        if (hi == nullptr || blob[i] + b > hi) hi = blob[i] + b;
+        mx = b > mx ? b : mx;
+    }
+    // The kernels address a slot as device_slot(0) + off_[s], so slot 0 has to be the lowest address. One registration
+    // keeps the file's order; ranges whose GPU addresses came back out of order cannot be read this way.
+    if (blob[0] != lo) {
+        err = "ExpertCache: the GPU addresses of the registered ranges are not in file order";
+        return false;
+    }
+    // Offsets from the lowest address, so every slot is base_ + off_[s] as with a device arena. Neighbouring slots of
+    // one layer are adjacent; across layers (or registered ranges) they need not be, which is why nothing here may
+    // read past a blob (slot_tail) or lend a slot.
+    off_.assign(n + 1, 0);
+    for (size_t i = 0; i < n; ++i) off_[i] = (uint64_t) (blob[i] - lo);
+    off_[n] = (uint64_t) (hi - lo);
+    base_ = const_cast<uint8_t*>(lo);
+    in_place_ = true;
+    residency_.resize(n);
+    for (size_t i = 0; i < n; ++i) residency_[i] = (int32_t) i;
+    slots_ = (int64_t) n;
+    live_slots_ = slots_;
+    n_layers_ = n_layers;
+    n_expert_ = n_expert;
+    blob_ = mx;
+    next_free_ = slots_;
+    admitted_ = slots_;
+    fills_ = 0;
+    layer_next_.assign((size_t) n_layers, 0);
+    for (int64_t l = 0; l < n_layers; ++l) layer_next_[(size_t) l] = (int32_t) ((l + 1) * n_expert);
+    return true;
+}
+
 void ExpertCache::close() {
 #if defined(STRATA_USE_HIP)
     if (blocking_staging_) (void) cudaFreeHost(blocking_staging_);
@@ -603,7 +672,10 @@ void ExpertCache::close() {
 #endif
     off_.clear();
     guard_ = 0;
-    if (!segs_.empty()) {
+    if (in_place_) {
+        base_ = nullptr;          // the mapping is the caller's
+        in_place_ = false;
+    } else if (!segs_.empty()) {
         release_segmented();
     } else if (vmm_) {
         vmm_.reset();   // unmaps and frees every chunk it still holds

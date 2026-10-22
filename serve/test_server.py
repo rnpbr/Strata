@@ -2882,6 +2882,21 @@ class StartNarrator(unittest.TestCase):
         self.assertIn("loading the experts into RAM (tens of GB)", said)
         self.assertIn("experts loaded: 31.64 GiB at 3.17 GiB/s", said)
 
+    def test_an_in_place_start(self):
+        """A GPU that shares the RAM: the engine picks --uma-experts itself, and the words follow its line, not the flags."""
+        d = Path(tempfile.mkdtemp())
+        (d / "experts.bin").write_bytes(b"\0" * 4096)
+        said = self.narrate(["--pack", str(d)], [
+            "strata generate: experts in place: this GPU shares the RAM and reads the pack's experts.bin where it lies "
+            "(--uma-experts)",
+            "strata generate: native pack: /x experts (largest blob 1.38 MB), PLE on the host",
+            "strata generate: experts read in place: 24576 experts, 31.64 GiB of RAM the GPU shares",
+            "strata generate: session is up (engine 0.1.47)"])
+        self.assertIn("reading the experts into RAM for the GPU to use where they lie (tens of GB)", said)
+        self.assertIn("the GPU reads the experts where they lie in RAM (24576 experts, 31.64 GiB", said)
+        self.assertNotIn("filling the GPU's expert cache", said)
+        self.assertNotIn("loading the experts into RAM", said)
+
 
 class CancelledRead(unittest.TestCase):
     """#471: a request cancelled while its prompt was read is recorded with the tokens the engine read (the DONE

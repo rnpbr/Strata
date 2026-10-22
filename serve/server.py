@@ -680,6 +680,17 @@ def experts_loading_words(args: list, size: str) -> str:
     return f"loading the experts into RAM ({size}) and locking part of them for the GPU."
 
 
+def experts_in_place_words(args: list) -> str:
+    """The loading step when the GPU reads the experts where they lie in RAM (--uma-experts, a Jetson or a DGX Spark)."""
+    try:
+        gb = os.path.getsize(os.path.join(args[args.index("--pack") + 1], "experts.bin")) / 1e9
+    except (OSError, IndexError, ValueError):
+        gb = 0.0
+    size = f"about {gb:.0f} GB" if gb >= 1 else "tens of GB"
+    return (f"reading the experts into RAM for the GPU to use where they lie ({size}): slow the first time after a "
+            "restart, a few seconds once they are in the OS file cache.")
+
+
 OPENS_BROWSER = False        # set in main() when the server was started with --open: only then may a message say a browser opens
 
 
@@ -718,6 +729,8 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
             cut = chunk.rfind(b"\n") + 1
             pos += cut
             for line in chunk[:cut].decode("utf-8", "replace").splitlines():
+                if "experts in place:" in line:      # the engine's own pick on a GPU that shares the RAM
+                    loading = experts_in_place_words(args)
                 if "PLE on" in line or "expert arena:" in line or "experts via mmap" in line:   # #505: mapped
                     say("arena", f"[strata] {loading}\n"
                                  "         YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES NOW - this is normal.\n"
@@ -726,6 +739,9 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
                 elif " loaded " in line and "GiB at" in line:
                     say("loaded", "[strata] experts loaded: " + line.split(" loaded ", 1)[1].strip() +
                         f" ({time.time() - t0:.0f} s so far)")
+                elif "experts read in place: " in line:    # a GPU that shares the RAM: nothing to fill
+                    say("cache", "[strata] the GPU reads the experts where they lie in RAM ("
+                        + line.split("experts read in place: ", 1)[1].strip() + ")")
                 elif "expert cache " in line and " slots, " in line and "auto" not in line:
                     n = line.split("expert cache ", 1)[1].split(";")[0].replace(" slots,", " experts,").strip()
                     say("cache", f"[strata] filling the GPU's expert cache ({n}) ...")

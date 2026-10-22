@@ -78,6 +78,11 @@ bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_e
 /// and the engine's host side (STRATA_UMA_HEADROOM_GIB).  Elsewhere it is cudaMemGetInfo's.
 size_t device_free_bytes();
 
+/// Bytes of RAM pinned for the GPU to read in place (uma_experts.hpp). device_free_bytes() takes them out of
+/// MemAvailable, which still lists them as reclaimable page cache.
+void uma_pinned_add(int64_t bytes);
+uint64_t uma_pinned_bytes();
+
 /// One piece of an expert blob that lives contiguously in a source's own memory: `n` bytes at `p`, to land `at` bytes into the blob.
 struct BlobPart { const uint8_t* p; uint64_t n; uint64_t at; };
 
@@ -98,6 +103,14 @@ public:
     bool open_sized(const std::vector<int64_t>& slot_bytes, int64_t n_layers, int64_t n_expert, std::string& err);
     /// Byte offset of each slot in the arena (null for uniform slots).
     const uint64_t* slot_offsets() const { return off_.empty() ? nullptr : off_.data(); }
+    /// Unified memory (uma_experts.hpp): the slots are the experts where they already lie, a host mapping the GPU
+    /// reads in place, instead of device memory they are copied into. `blob[l * n_expert + e]` is that expert's GPU
+    /// address and `layer_bytes[l]` its layer's blob size; every pair is resident, in slot `l * n_expert + e`. Nothing
+    /// is allocated, filled or freed here. The slots are read-only, so they are never lent, resized or written: the
+    /// caller keeps the mapping registered for as long as the cache is open.
+    bool open_in_place(const std::vector<const uint8_t*>& blob, const std::vector<int64_t>& layer_bytes, int64_t n_layers,
+                       int64_t n_expert, std::string& err);
+    bool in_place() const { return in_place_; }
     void close();
 
     bool valid() const { return base_ != nullptr; }
@@ -229,7 +242,7 @@ public:
     /// STRATA_MMQ_DIRECT: the address `blob` bytes into slot `s` when the slot has room for `need` more bytes there
     /// (null otherwise, or for a bad slot).  Uniform slots too: their stride is the largest blob.
     uint8_t* slot_tail(int32_t s, uint64_t blob, uint64_t need) const {
-        if (s < 0 || s >= slots_ || base_ == nullptr) return nullptr;
+        if (s < 0 || s >= slots_ || base_ == nullptr || in_place_) return nullptr;
         return slot_room(s) >= blob + need ? base_ + slot_offset(s) + blob : nullptr;
     }
 
@@ -243,6 +256,7 @@ private:
     bool open_segmented(uint64_t want, std::string& err);
     void release_segmented();
     uint8_t* base_ = nullptr;
+    bool in_place_ = false;             ///< open_in_place: base_ points into a registered host mapping, not owned
     int64_t live_slots_ = 0;            ///< #533: slots() - all of them unless shrunk
     int64_t seg_req_ = 0;               ///< #533: the segment size asked for (0: one cudaMalloc)
     int64_t guard_req_ = 0;             ///< STRATA_MMQ_DIRECT: bytes kept after each sized slot's blob (set_slot_guard)

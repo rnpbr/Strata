@@ -24,6 +24,9 @@
 #include "strata/core/device.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #include "strata/core/expert_cache.hpp"
+#if defined(STRATA_UMA_EXPERTS)
+#include "strata/core/uma_experts.hpp"
+#endif
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/session_save_reclaim.hpp"
@@ -530,6 +533,11 @@ struct Options {
     bool no_host_worker = false;
     bool coupled_draft = strata::core::coupled_draft_env(); ///< Coupled draft sampling for MTP drafter under sampling
     bool mmap_experts = false;    ///< R2.1: opt OUT of the resident arena, back to MapViewOfFile
+    /// A GPU that shares the RAM (Jetson, DGX Spark): every expert read where the pack's experts.bin lies, registered
+    /// for the GPU (uma_experts.hpp) - no VRAM copy, no fill, no CPU experts.  `uma_experts_ask`: 1 --uma-experts or
+    /// STRATA_UMA_EXPERTS=1, 0 --no-uma-experts or STRATA_UMA_EXPERTS=0, -1 automatic; `uma_experts` is the outcome.
+    int uma_experts_ask = std::getenv("STRATA_UMA_EXPERTS") == nullptr ? -1 : std::getenv("STRATA_UMA_EXPERTS")[0] == '1' ? 1 : 0;
+    bool uma_experts = false;
     std::string shared_expert_arena; ///< Linux: optional file backing for the resident arena shared by processes
     bool resident_cpu_experts = false; ///< mmap-backed static-cache misses copied into ordinary RAM
     /// `--resident-experts` (the low-RAM PC's resident mode, chosen by setup): `--resident-cpu-experts` with the copy
@@ -1040,6 +1048,12 @@ void usage() {
                  "                       at start (about a second) and the faster one is taken\n"
                  "  --coupled-draft      enable coupled draft sampling for MTP drafter under sampling (STRATA_SPEC_COUPLED)\n"
                  "  --no-coupled-draft   disable coupled draft sampling (propose argmax drafts)\n"
+                 "  --uma-experts        a GPU that shares the RAM (Jetson, DGX Spark): every expert is read where\n"
+                 "                       the pack's experts.bin lies, registered for the GPU - nothing copied or\n"
+                 "                       filled, no expert computed on the CPU.  The default on such a GPU when the\n"
+                 "                       pack has experts.bin and the RAM holds it with 20 GiB to spare\n"
+                 "  --no-uma-experts     copy the experts into a cache as on a graphics card (STRATA_UMA_EXPERTS=0/1\n"
+                 "                       sets either)\n"
                  "  --mmap-experts       R2.1: opt OUT of the resident expert arena, back to MapViewOfFile.\n"
                  "                       The A/B arm: the mmap's rate depends on the OS page cache holding\n"
                  "                       34 GB, and measured 71.97 vs 34.78 ms/token cold vs warm.\n"
@@ -2725,6 +2739,8 @@ int main(int argc, char** argv) {
             o.expert_profile_save_min = std::atof(next("--expert-profile-save-every"));
         else if (a == "--gpu-stages") o.gpu_stages = true;
         else if (a == "--mmap-experts") o.mmap_experts = true;
+        else if (a == "--uma-experts") o.uma_experts_ask = 1;
+        else if (a == "--no-uma-experts") o.uma_experts_ask = 0;
         else if (a == "--shared-expert-arena") o.shared_expert_arena = next("--shared-expert-arena");
         else if (a == "--resident-cpu-experts") o.resident_cpu_experts = o.resident_cpu_explicit = true;
         else if (a == "--resident-experts") {
@@ -2999,6 +3015,72 @@ int main(int argc, char** argv) {
         return 2;
     }
     bool split_own_auto = false;   // #340: the split keeps own prompt buffers by its rule (not --no-prefill-borrow)
+#if defined(STRATA_UMA_EXPERTS)
+    // one GPU, and it shares the RAM (Jetson, DGX Spark)
+    int n_dev = 0, igpu = 0, dev0 = 0;
+    const bool shared_ram_gpu = cudaGetDeviceCount(&n_dev) == cudaSuccess && n_dev == 1 && cudaGetDevice(&dev0) == cudaSuccess &&
+                                cudaDeviceGetAttribute(&igpu, cudaDevAttrIntegrated, dev0) == cudaSuccess && igpu != 0;
+    (void) cudaGetLastError();
+    if (o.uma_experts_ask < 0 && shared_ram_gpu) {
+        // Automatic: one GPU that shares the RAM and can read a read-only mapping, a pack with experts.bin, no option
+        // that copies or moves the experts, and RAM that holds the file with 20 GiB to spare (the engine took ~10 GiB
+        // beside Q2_0's 31.6 GiB on a 64 GB AGX Orin, and the OS keeps its share).  Measured there against the copy:
+        // ready in 12 s instead of ~590 s, 30 GB less RAM, prompts 20-33% and decode ~7% faster, the same tokens.
+        std::error_code ec;
+        const auto bin_bytes = std::filesystem::file_size(std::filesystem::path(o.pack) / "experts.bin", ec);
+        if (strata::core::UmaExperts::supported() && !o.expert_profile.empty() && !o.resident_cpu_experts &&
+            o.shared_expert_arena.empty() && !o.vram_elastic && !o.expert_cache_per_layer) {
+            const uint64_t ram = strata::platform::total_physical_memory();
+            if (ec)
+                std::fprintf(stderr, "strata generate: this GPU shares the RAM: with an experts.bin in the pack (tools/iq_pack.py "
+                                     "--experts-bin) every expert would be read in place - no copy, no fill at start\n");
+            else if ((uint64_t) bin_bytes + (20ull << 30) > ram)
+                std::fprintf(stderr, "strata generate: this GPU shares the RAM, but the %.1f GiB experts.bin leaves less than "
+                                     "20 GiB of the %.1f GiB RAM: the experts are copied into a cache (--uma-experts reads "
+                                     "them in place anyway)\n", (double) bin_bytes / 1073741824.0, (double) ram / 1073741824.0);
+            else
+                o.uma_experts_ask = 1;
+        }
+    }
+#endif
+    o.uma_experts = o.uma_experts_ask == 1;
+    if (o.uma_experts) {
+#if defined(STRATA_UMA_EXPERTS)
+        // every expert is read where experts.bin lies: a copy of them in RAM, a cache that shrinks or a slot the prompt
+        // path writes into would each break that
+        if (o.expert_profile.empty()) {   // the hit path and the verify window read the residency the profile sets up
+            std::fprintf(stderr, "strata generate: --uma-experts needs --expert-profile\n");
+            return 2;
+        }
+        const char* clash = o.resident_cpu_experts ? "--resident-experts / --resident-budget-gib"
+                          : !o.shared_expert_arena.empty() ? "--shared-expert-arena"
+                          : o.vram_elastic ? "--vram-elastic"
+                          : o.expert_cache_per_layer ? "--expert-cache-per-layer" : nullptr;
+        if (clash != nullptr) {
+            std::fprintf(stderr, "strata generate: --uma-experts reads every expert in place and cannot be used with %s\n", clash);
+            return 2;
+        }
+        // the experts.bin pages are the arena: no RAM copy of it (--mmap-experts), and nothing may borrow its read-only
+        // slots for the prompt path's buffers, which then have their own memory
+        o.mmap_experts = true;
+        o.no_prefill_borrow = true;
+        // said before anything loads: the server words its progress from it
+        std::fprintf(stderr, "strata generate: experts in place: this GPU shares the RAM and reads the pack's experts.bin "
+                             "where it lies (--uma-experts)\n");
+#else
+        std::fprintf(stderr, "strata generate: --uma-experts needs the CUDA engine on Linux\n");
+        return 2;
+#endif
+    }
+#if defined(STRATA_UMA_EXPERTS)
+    if (shared_ram_gpu && !o.uma_experts && !o.mmap_experts && o.shared_expert_arena.empty()) {
+        // The resident arena is every expert copied into page-locked RAM, and on a GPU that shares the RAM the expert
+        // cache is a second copy in that same RAM. Mapped, the OS file cache holds them once and can take them back.
+        o.mmap_experts = true;
+        std::fprintf(stderr, "strata generate: this GPU shares the RAM: the experts are mapped from the pack, not copied "
+                             "into a resident arena beside the cache (--mmap-experts)\n");
+    }
+#endif
     if (o.mmap_experts && !o.shared_expert_arena.empty()) {
         std::fprintf(stderr, "strata generate: --shared-expert-arena backs the resident arena and cannot be used with --mmap-experts\n");
         return 2;
@@ -5922,6 +6004,9 @@ int main(int argc, char** argv) {
     // numbers if the slots do not fit, instead of handing back a cache smaller than it was asked for.
     mem_mark("the weights, the session and the drafter");
     strata::core::ExpertCache xcache;
+    uint64_t uma_arena_bytes = 0;   // --uma-experts: the bytes of experts.bin registered for the GPU
+    // --uma-experts: the "cache" is every expert where it lies, so there is nothing to size (auto or a number)
+    if (o.uma_experts) o.expert_cache = (int) (g.n_layers * g.n_expert);
     // THE HEAD BEFORE THE CACHE: the native head and the logits are allocated above, before the expert arena (#620)
     const bool auto_cache = o.expert_cache < 0;
     bool reserve_adapted = false;   // #496: the auto sizing lowered the reserve so a small card's cache fits
@@ -6197,7 +6282,72 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata generate: uniform expert slots, no guard (STRATA_MMQ_DIRECT): an expert is read "
                                  "in its slot where the slot's slack covers the over-read\n");
     }
-    if (o.expert_cache > 0) {
+#if defined(STRATA_UMA_EXPERTS)
+    // --uma-experts: the arena is experts.bin itself, registered for the GPU; it outlives every use of xcache below
+    strata::core::UmaExperts uma_arena;
+    if (o.uma_experts) {
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        const std::string bin = (std::filesystem::path(o.pack) / "experts.bin").string();
+        std::string uerr;
+        if (multi_gpu) {
+            std::fprintf(stderr, "strata generate: --uma-experts reads the experts on one GPU; drop the layer split\n");
+            return 2;
+        }
+        if (slot_guard > 0) {   // a read past the last expert would leave the mapping
+            std::fprintf(stderr, "strata generate: --uma-experts cannot be used with STRATA_MMQ_DIRECT (it reads past each slot)\n");
+            return 2;
+        }
+        if (!strata::core::UmaExperts::supported()) {
+            std::fprintf(stderr, "strata generate: --uma-experts needs a GPU that shares the RAM and can read a read-only "
+                                 "host mapping (cudaDevAttrIntegrated, cudaDevAttrHostRegisterReadOnlySupported)\n");
+            return 2;
+        }
+        if (lay.n_layers != g.n_layers || lay.n_expert != g.n_expert) {
+            std::fprintf(stderr, "strata generate: --uma-experts: the pack's expert table (%lld x %lld) is not the model's "
+                                 "(%lld x %lld)\n", (long long) lay.n_layers, (long long) lay.n_expert,
+                         (long long) g.n_layers, (long long) g.n_expert);
+            return 2;
+        }
+        if (!std::filesystem::exists(bin)) {
+            std::fprintf(stderr, "strata generate: --uma-experts reads %s, which the pack does not have: write it with "
+                                 "tools/iq_pack.py --experts-bin\n", bin.c_str());
+            return 2;
+        }
+        if (!uma_arena.open(bin, lay, uerr)) {
+            std::fprintf(stderr, "strata generate: --uma-experts: %s\n", uerr.c_str());
+            return 1;
+        }
+        std::vector<const uint8_t*> blobs((size_t) (g.n_layers * g.n_expert));
+        std::vector<int64_t> layer_bytes((size_t) g.n_layers);
+        for (int64_t l = 0; l < g.n_layers; ++l) {
+            layer_bytes[(size_t) l] = (int64_t) lay.blob_bytes(l);
+            for (int64_t e = 0; e < g.n_expert; ++e) blobs[(size_t) (l * g.n_expert + e)] = uma_arena.device_blob(l, e);
+        }
+        if (!xcache.open_in_place(blobs, layer_bytes, g.n_layers, g.n_expert, uerr)) {
+            std::fprintf(stderr, "strata generate: --uma-experts: %s\n", uerr.c_str());
+            return 1;
+        }
+        // the first, a middle and the last expert: a native pack's bytes against the GGUF's (experts.bin is not checked
+        // against the model anywhere else), and the GPU's address of each against what the mapping holds there
+        const int64_t checks[3][2] = {{0, 0}, {g.n_layers / 2, g.n_expert / 2}, {g.n_layers - 1, g.n_expert - 1}};
+        for (const auto& c : checks)
+            if ((lay.native && !uma_arena.matches_gguf(o.native_preset, c[0], c[1], uerr)) ||
+                !xcache.verify_slot(xcache.slot_of(c[0], c[1]), uma_arena.host_blob(c[0], c[1]), uerr,
+                                    (int64_t) lay.blob_bytes(c[0]))) {
+                std::fprintf(stderr, "strata generate: --uma-experts: layer %lld expert %lld: %s\n", (long long) c[0],
+                             (long long) c[1], uerr.c_str());
+                return 1;
+            }
+        o.expert_cache = (int) xcache.slots();
+        uma_arena_bytes = uma_arena.bytes();
+        std::fprintf(stderr, "strata generate: every expert read in place from %s: %.2f GiB registered for the GPU in "
+                             "%d range%s in %.1f s, nothing copied (unified memory, --uma-experts)\n",
+                     bin.c_str(), (double) uma_arena.bytes() / 1073741824.0, uma_arena.ranges(),
+                     uma_arena.ranges() == 1 ? "" : "s", uma_arena.open_seconds());
+        mem_mark("registering the experts in place");
+    }
+#endif
+    if (o.expert_cache > 0 && !xcache.in_place()) {
         // keep the first `keep_bytes` of the cache (the profile's hottest experts first); false when nothing is left
         auto shrink_to = [&](int64_t keep_bytes) -> bool {
             if (keep_bytes <= 0) { o.expert_cache = 0; sized_slots.clear(); return false; }
@@ -6303,7 +6453,11 @@ int main(int argc, char** argv) {
                                  "page file lets it use more of the free VRAM\n",
                          o.expert_cache, (double) xcache.bytes() / 1073741824.0, failed);
     }
-    if (o.expert_cache > 0) {
+    if (xcache.in_place()) {
+        // every expert is a GPU expert: there is no fill, no admission and no CPU expert to round differently
+        std::fprintf(stderr, "strata generate: experts read in place: %lld experts, %.2f GiB of RAM the GPU shares\n",
+                     (long long) xcache.slots(), (double) uma_arena_bytes / 1073741824.0);
+    } else if (o.expert_cache > 0) {
         std::fprintf(stderr, "strata generate: expert cache %lld slots, %.2f GiB of VRAM; policy is\n",
                      (long long) xcache.slots(), xcache.gib());
         mem_mark("opening the expert cache");
@@ -6334,7 +6488,7 @@ int main(int argc, char** argv) {
     // admission finds no room and every non-profiled expert stays a CPU miss.  That is what makes the profile
     // the policy rather than a hint.
     int64_t prefilled = 0;
-    if (!profile.empty() && srcp != nullptr) {
+    if (!profile.empty() && srcp != nullptr && !xcache.in_place()) {
         // #369 (dag08): per layer, a full layer skips only its own pairs - each layer takes its hottest experts until
         // its range is full (one full layer used to end the whole fill, leaving most layers empty)
         const bool per_layer = xcache.per_layer_admission();
@@ -7320,7 +7474,7 @@ int main(int argc, char** argv) {
             static const bool keep = std::getenv("STRATA_ARENA_RELEASE") && std::getenv("STRATA_ARENA_RELEASE")[0] == '0';
             rss_probe("before the release");
             uint64_t released = 0;
-            if (!keep)
+            if (!keep && !xcache.in_place())   // in place, the experts' pages are the arena
                 for (size_t i = 0; i < host_res.size(); ++i)
                     if (host_res[i] != strata::core::kNotResident)
                         released += srcp->release((int64_t) i / g.n_expert, (int64_t) i % g.n_expert);
@@ -8651,7 +8805,9 @@ int main(int argc, char** argv) {
                                  (long long) (borrowed - kept), (long long) borrowed);
             }
         } else {
-            std::fprintf(stderr, "strata serve: the prompt path allocates its own buffers (too few cache slots to borrow)\n");
+            std::fprintf(stderr, "strata serve: the prompt path allocates its own buffers (%s)\n",
+                         xcache.in_place() ? "the experts are read in place, their slots are not lent"
+                                           : "too few cache slots to borrow");
         }
         rss_probe("the prompt path set up");
         // layer split across GPUs: a prompt path per stage, each handing its chunk's rows to the next.
@@ -10859,9 +11015,9 @@ int main(int argc, char** argv) {
         };
         {
             // what is left once everything is allocated: under WDDM a GPU filled to the brim does not fail, it pages -
-            // and a page-in while the verify graph spins on a host flag stalls the request for good
-            size_t free_b = 0, total_b = 0;
-            cudaMemGetInfo(&free_b, &total_b);
+            // and a page-in while the verify graph spins on a host flag stalls the request for good (on unified memory
+            // the RAM the OS can still hand out, less any experts pinned in place)
+            const size_t free_b = strata::core::device_free_bytes();
             // below ~256 MiB a later allocation (a first-used window's buffers, the desktop, another program) can make
             // the driver page GPU memory, and a verify graph spinning on a host flag then never finishes
             const int64_t free_mib = (int64_t) (free_b >> 20);

@@ -5426,16 +5426,12 @@ bool shared_arena_pack_hash(const std::string& pack_dir, const std::string& expe
 
 }  // namespace
 
-namespace {
-/// The GGUF file that holds role `r` (0 gate, 1 up, 2 down) of layer `l`: a name beside the --native shard
-/// (native_experts.txt v3 per layer, v4 per role), or the --native shard itself.
 std::string expert_gguf_file(const std::string& gguf, const strata::kernels::cpu::ExpertLayout& lay, int64_t l, int r) {
     const size_t i = (size_t) (3 * l + r);
     if (lay.gguf_file.size() <= i || lay.gguf_file[i].empty()) return gguf;
     const size_t cut = gguf.find_last_of("/\\");
     return (cut == std::string::npos ? std::string() : gguf.substr(0, cut + 1)) + lay.gguf_file[i];
 }
-}  // namespace
 
 void ExpertSource::record_inputs(const std::string& pack_experts, const std::string& gguf,
                                  const strata::kernels::cpu::ExpertLayout& lay, bool from_gguf) {

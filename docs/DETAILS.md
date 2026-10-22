@@ -707,6 +707,39 @@ Building from git, trying a pull request, the monitor from a checkout: [INSTALL.
 
 ---
 
+## Jetson and DGX Spark: the GPU reads the experts where they lie (on by default when they fit)
+
+On these boards the GPU has no memory of its own: it reads the RAM. A graphics card copies the experts it keeps into
+its VRAM. Here that copy would hold the same experts twice in the same RAM, and filling it takes minutes at every
+start. So when the model's pack has `experts.bin` and the RAM holds it with 20 GiB to spare, the engine maps
+`experts.bin` read-only, registers it for the GPU, and every expert is read where it lies (`--uma-experts`). Nothing
+is copied or filled, and no expert runs on the CPU. Setup writes `experts.bin` for such a board (once, the size of the
+experts: 34 GB for Q2_0).
+
+Measured on a Jetson AGX Orin 64 GB (JetPack 7.2, CUDA 13.2, MAXN, the model on an SD card), Q2_0, MTP `--spec 4`,
+8K context, against the copy (`--mmap-experts --expert-cache 24576`, every expert in the cache):
+
+| | In place | Copy |
+| --- | --- | --- |
+| Ready, `experts.bin` in the OS file cache | 10-12 s | - |
+| Ready, everything read from the SD card | ~345 s | ~590 s (the cache fill, 55-78 MB/s) |
+| RAM in use while serving | ~10 GB | ~40 GB |
+| Prompt, 4,540 tokens | 228 tok/s | 172-190 tok/s |
+| Output, code / Portuguese prose (400 tokens) | 28.2 / 23.0 tok/s | 26.3 / 21.4 tok/s |
+
+The two runs accepted the same drafts on the same prompts (248/326 and 205/354): they wrote the same tokens.
+
+- `--uma-experts` (or `STRATA_UMA_EXPERTS=1`) asks for it; `--no-uma-experts` (or `STRATA_UMA_EXPERTS=0`) copies the
+  experts into a cache as on a graphics card. It cannot be used with `--resident-experts`, `--resident-budget-gib`,
+  `--shared-expert-arena`, `--vram-elastic`, `--expert-cache-per-layer`, a layer split or `STRATA_MMQ_DIRECT`.
+- At start three experts of `experts.bin` are compared with the model's GGUF: a file cut from another model is
+  refused, not read.
+- Without it (no `experts.bin`, or too little RAM) the experts are mapped from the pack (`--mmap-experts`), never
+  copied into a resident arena beside the cache: on these boards the two would be the same RAM.
+- The memory the engine counts as free is the RAM the OS can hand out, less 6 GiB for the system
+  (`STRATA_UMA_HEADROOM_GIB`) and less the registered experts. On JetPack 7.2 the driver's own free figure follows the
+  OS figure and still counts the registered experts as free, so it is not used.
+
 ## Sharing the GPU with other programs (optional)
 
 By default the model stays loaded until you close Strata. On a PC that also games, renders or runs another model

@@ -1340,6 +1340,9 @@ private:
 /// gate/up/down at its recorded (file, offset) must be that tensor (`blk.L.ffn_<role>_exps.weight`), of the
 /// layout's type and dimensions, and inside the file.  `native` is the --native shard (see set_gguf).
 bool check_experts_gguf(const std::string& native, const strata::kernels::cpu::ExpertLayout& lay, std::string& err);
+/// The GGUF file that holds role `r` (0 gate, 1 up, 2 down) of layer `l`: a name beside the --native shard
+/// (native_experts.txt v3 per layer, v4 per role), or the --native shard itself.
+std::string expert_gguf_file(const std::string& native, const strata::kernels::cpu::ExpertLayout& lay, int64_t l, int r);
 /// Fills `dst` (lay.total bytes, the experts.bin layout) from the GGUF files, one role at a time.
 /// `unbuffered`: each chunk read past the file cache (Windows); `ready`: layer l is written only once
 /// *ready > l + 1 (an arena that is still being registered).
