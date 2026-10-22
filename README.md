@@ -47,7 +47,7 @@ files on another drive.
 ./setup.sh                 # start the server (Ctrl+C stops it)
 ```
 
-- Chat page: http://127.0.0.1:8080
+- Web page: http://127.0.0.1:8080 (chat with pictures, a monitor of the board, settings)
 - OpenAI API: `http://127.0.0.1:8080/v1` · Anthropic API: `http://127.0.0.1:8080/v1/messages`
 
 ```sh
@@ -55,8 +55,16 @@ curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/jso
   -d '{"model": "strata", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-From other machines: `./setup.sh --setup --host 0.0.0.0 --api-key YOUR_KEY`.
+From other machines on the network: `./setup.sh --setup --host 0.0.0.0 --api-key YOUR_KEY`, then `./setup.sh`. The API key
+is the server's password: every client sends it, and the web page asks for it once and keeps it in the browser. On
+`127.0.0.1` no key is needed.
+
 Coding agents (OpenCode, Codex CLI, Claude Code): [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
+
+On a Jetson the monitor shows the board as it is: memory shared by the CPU and the GPU (the experts read in place
+counted), the whole board's power, tokens per joule for each answer, the power mode and whether the clocks are pinned.
+
+![The web page's monitor on a Jetson AGX Orin](docs/media/jetson-monitor.png)
 
 ## Performance
 
