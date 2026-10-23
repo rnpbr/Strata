@@ -5147,7 +5147,8 @@ def update_installed_engine(url_base, toolkit=None) -> None:
     vision = meta.get("vision") or "none"
     if local:                                          # compiled here: is it older than the source (a git pull)?
         if meta.get("src") == source_hash(ENGINE_SOURCES) and not stale_binary(eng / EXE) and \
-                (vision == "none" or meta.get("vision_src") == source_hash(VISION_SOURCES)):
+                (vision == "none" or meta.get("vision_src") == source_hash(VISION_SOURCES)) and \
+                (vision != "gpu" or reader_has_cuda(eng / VEXE)):
             return
     elif ver >= MIN_ENGINE:
         return
@@ -5475,7 +5476,8 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = local and (eng / EXE).exists() and meta.get("src") == src and not new_arch and \
         (meta.get("isa_floor") or "") == floor and not stale_binary(eng / EXE)
-    vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc))
+    vision_ok = not want_vision or ((eng / VEXE).exists() and (not local or meta.get("vision_src") == vsrc and
+                                                                (vision != "gpu" or reader_has_cuda(eng / VEXE))))
     if engine_ok and vision_ok:
         ok("engine already built for this PC")
         return eng
@@ -5514,6 +5516,8 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
                      *toolkit_root_defs(nvcc)]
         cmake_build(ROOT / "tools" / "vision", vdir, "strata-vision", defs, vcvars,
                     "build-vision-cuda12.bat" if t12 else "build-vision.bat")
+        if vision == "gpu" and not reader_has_cuda(vdir / "bin" / VEXE):
+            fail("the image encoder was compiled without CUDA", f"delete the folder {vdir} and run setup again")
         shutil.copy2(vdir / "bin" / VEXE, eng / VEXE)
     bindir = Path(nvcc).parent                            # the toolkit's own libraries (bin, bin/x64, lib64)
     dirs = [str(d) for d in (bindir, bindir / "x64", bindir.parent / "lib64") if d.is_dir()]
@@ -6373,6 +6377,21 @@ def stale_binary(exe) -> bool:
     leave the old binary beside a stamp of the new source, and nothing would ever compile it again."""
     v = binary_engine_version(exe)
     return v is not None and v != source_version()
+
+
+def reader_has_cuda(exe: Path) -> bool:
+    """The compiled picture reader has the CUDA backend: it names the CUDA runtime it loads (libcudart.so.13, cudart64_13.dll).
+    A CPU-only reader installed as the GPU one read pictures on the CPU, and its warm-up outlasted the server's start timeout."""
+    try:
+        with open(exe, "rb") as f:
+            tail = b""
+            while chunk := f.read(1 << 22):
+                if b"cudart" in tail + chunk:
+                    return True
+                tail = chunk[-8:]
+    except OSError:
+        pass
+    return False
 
 
 def engine_version(exe: Path) -> tuple:

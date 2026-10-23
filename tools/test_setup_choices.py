@@ -547,8 +547,49 @@ class DesktopReserveTip(unittest.TestCase):
         self.assertIn("desktop", tip)
 
 
+CUDA_READER = b"vision\0libcudart.so.13\0"     # what a CUDA build of strata-vision names among its libraries
+
+
 class CudaVision(unittest.TestCase):
     """#411: the image encoder setup compiles beside the CUDA engine is built for this PC, not portable."""
+
+    def build(self, root: Path, reader: bytes | None, produces: bytes):
+        """build_engine for images on the GPU, the engine already built and `reader` installed (None: none yet)."""
+        eng = root / "engine"
+        eng.mkdir()
+        (eng / setup.EXE).write_bytes(b"engine")
+        (eng / "BUILD.json").write_text(json.dumps({"source": "local", "archs": [86], "src": "S", "vision": "gpu",
+                                                    "vision_src": "V"}))
+        if reader is not None:
+            (eng / setup.VEXE).write_bytes(reader)
+        built = []
+
+        def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
+            built.append(target)
+            (bdir / "bin").mkdir(parents=True)
+            (bdir / "bin" / setup.VEXE).write_bytes(produces)
+
+        with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", cmake_build), \
+                mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "S"), \
+                mock.patch.object(setup, "install_build_tools", lambda gpu, yes: (str(root / "nvcc"), None)), \
+                mock.patch.object(setup, "source_version", lambda: "test"):
+            quiet(setup.build_engine, {"arch": "86"}, "gpu", True, "llama")
+        return built, (eng / setup.VEXE).read_bytes()
+
+    def test_a_cpu_reader_installed_for_the_gpu_is_built_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            built, reader = self.build(Path(d), b"vision", CUDA_READER)
+        self.assertEqual(built, ["strata-vision"])
+        self.assertEqual(reader, CUDA_READER)
+
+    def test_a_cuda_reader_is_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            built, _ = self.build(Path(d), CUDA_READER, CUDA_READER)
+        self.assertEqual(built, [])
+
+    def test_a_build_without_cuda_is_refused(self):
+        with tempfile.TemporaryDirectory() as d, self.assertRaises(SystemExit):
+            self.build(Path(d), None, b"vision")
 
     def test_the_encoder_is_built_native(self):
         for vision in ("gpu", "cpu"):
@@ -563,7 +604,7 @@ class CudaVision(unittest.TestCase):
                 def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
                     built.append((target, defs))
                     (bdir / "bin").mkdir(parents=True)
-                    (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
+                    (bdir / "bin" / setup.VEXE).write_bytes(CUDA_READER if "-DSTRATA_VISION_CUDA=ON" in defs else b"vision")
 
                 with mock.patch.object(setup, "ROOT", root), mock.patch.object(setup, "cmake_build", cmake_build), \
                         mock.patch.object(setup, "source_hash", lambda p: "V" if p == setup.VISION_SOURCES else "S"), \
@@ -623,7 +664,7 @@ class HostCompilers(unittest.TestCase):
             def cmake_build(src_dir, bdir, target, defs, vcvars, bat):
                 built.append((target, defs))
                 (bdir / "bin").mkdir(parents=True, exist_ok=True)
-                (bdir / "bin" / setup.VEXE).write_bytes(b"vision")
+                (bdir / "bin" / setup.VEXE).write_bytes(CUDA_READER)
                 (bdir / setup.EXE).write_bytes(b"engine")
 
             env = {"CC": "gcc-14", "CXX": "g++-14", "CUDAHOSTCXX": ""}
