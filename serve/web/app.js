@@ -38,12 +38,15 @@ function toast(kind, title, text = "", ms = 3500, action = null) {
   setTimeout(() => el.remove(), ms);
 }
 
-async function copyText(text, btn) {
+// `shown`: the element with the text on the page.  The browser gives the clipboard only to secure pages (https, or this
+// computer's own address): over plain http from another device the text is selected for Ctrl+C instead.
+async function copyText(text, btn, shown) {
   try {
     await navigator.clipboard.writeText(text);
-  } catch (e) {                                   // http on another host: no async clipboard
-    const ta = document.createElement("textarea");
-    ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+  } catch (e) {
+    if (shown) getSelection().selectAllChildren(shown);
+    toast("info", "Press Ctrl+C to copy", "The browser copies with one click only over https or on this computer itself.", 5000);
+    return;
   }
   if (btn) {
     const use = btn.querySelector("use");
@@ -545,7 +548,7 @@ function renderAbout(eng, hw, st) {
 }
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-copy]");
-  if (b) copyText(b.dataset.copy, b);
+  if (b) copyText(b.dataset.copy, b, b.previousElementSibling);
 });
 $("req-all").addEventListener("click", () => { reqShowAll = !reqShowAll; if (lastMetrics) render(lastMetrics); });
 
@@ -879,9 +882,9 @@ function scrollDown(force) { const s = $("chat-scroll"); if (force || nearBottom
 
 $("chat").addEventListener("click", (e) => {
   const cc = e.target.closest("[data-code-copy]");
-  if (cc) { copyText(cc.closest(".st-code").querySelector("pre").textContent, cc); return; }
+  if (cc) { const pre = cc.closest(".st-code").querySelector("pre"); copyText(pre.textContent, cc, pre); return; }
   const mc = e.target.closest("[data-msg-copy]");
-  if (mc) { const i = +mc.closest(".st-msg").dataset.i; copyText(messages[i].text, mc); return; }
+  if (mc) { const el = mc.closest(".st-msg"); copyText(messages[+el.dataset.i].text, mc, el.querySelector(".st-bubble")); return; }
   // a tool block: its open state lives in the message (the answer is rebuilt while it streams), so the click sets it
   const sum = e.target.closest(".tool-call > summary");
   if (sum) {
