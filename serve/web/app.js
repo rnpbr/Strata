@@ -101,7 +101,7 @@ $("api-key").value = store.get("apikey", "");
 // A server started with --api-key (on a network) answers 401 without it. Until this browser has a key the server
 // accepts, the chat is locked (nothing can be typed or sent) and the key is asked for in its place; a key is checked
 // against the server before it is kept, so a wrong one never unlocks the chat.
-let locked = false;
+let locked = false, healthKnown = false;      // healthKnown: /health said whether this server needs a key
 function setLocked(on, why = "") {
   locked = on;
   // every control of the composer: nothing to type, attach, start, save or tune until the server answers this browser
@@ -146,6 +146,8 @@ async function tryKey(k) {
   $("api-key").value = k;
   keyWarned = false;
   setLocked(false);
+  loadMcp();
+  if (tab === "about") loadConfig();
   toast("success", "Unlocked", "The key is kept in this browser only.");
   $("input").focus();
   return true;
@@ -179,6 +181,7 @@ async function loadHealth() {
     $("api-key").placeholder = health.api_key ? "Required by this server" : "Not needed on this server";
     $("api-key-note").textContent = health.api_key ? "this server requires one" : "this server does not ask for one";
     if (health.api_key && !store.get("apikey", "")) askKey();
+    healthKnown = true;
     if (location.hash === "#images" && health.image_generation) showTab("images");
   } catch (e) {
     setTimeout(loadHealth, 2000);
@@ -240,6 +243,7 @@ function setMetric(key, value, unit, sub) {
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
 let reqShowAll = false;   // the Monitor's request table: the last 12, or every one the server keeps (issue #35)
 async function poll() {
+  if (locked) { setTimeout(poll, 1000); return; }  // no key yet: every call would be refused (and logged as an error)
   try {
     const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
     if (r.status === 401) {
@@ -557,6 +561,7 @@ $("req-all").addEventListener("click", () => { reqShowAll = !reqShowAll; if (las
 // "strata_mcp": true, which only this page sends); the Monitor lists the servers and what they offer.
 let mcpInfo = {servers: [], tools: 0}, mcpRetry = null;
 async function loadMcp() {
+  if (locked || !healthKnown) return;
   try {
     const r = await fetch("mcp", {headers: headers()});
     if (!r.ok) return;
@@ -592,6 +597,7 @@ function renderMcp() {
 // server lists them, checks every value and keeps every other key of the file as it is.
 let cfgKeys = [];
 async function loadConfig() {
+  if (locked || !healthKnown) return;
   let r;
   try { r = await fetch("config", {headers: headers()}); } catch (e) { return; }
   if (!r.ok) { $("cfg-card").hidden = true; return; }       // no run config, an older server, or no key yet
@@ -1196,6 +1202,7 @@ function loadDrawer(s = settings) {
 // "Use for other apps too": the server keeps these settings as every client's defaults (GET/POST /settings)
 let sharedOn = false;
 async function loadShared() {
+  if (locked) return;
   try {
     const r = await fetch("settings", {headers: headers()});
     if (r.ok) sharedOn = !!(await r.json()).shared;
@@ -1274,9 +1281,8 @@ setBusy(false);
 renderChat();
 const startQuestion = new URLSearchParams(location.search).get("q");   // /?q=... starts a chat (a shortcut)
 if (startQuestion) history.replaceState(null, "", location.pathname + location.hash);
-loadHealth().then(loadMcp).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 showTab(location.hash.slice(1) || "chat");
-poll();
+loadHealth().then(() => { poll(); if (tab === "about") loadConfig(); return loadMcp(); }).then(() => { if (startQuestion) { $("input").value = startQuestion; send(); } });
 
 // ------------------------------------------------------------------ images (POST /v1/images/generations)
 $("img-form").onsubmit = async (ev) => {

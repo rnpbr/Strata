@@ -1,7 +1,9 @@
 "use strict";
 const $ = id => document.getElementById(id);
 let selected = null, detail = null, pane = "input", records = [], state = null, operating = false, stamp = "", actionError = "";
-let apiKey = sessionStorage.getItem("strata.monitor.key") || "";
+// the key typed here (this tab only), else the one the chat page keeps in this browser
+const savedKey = () => { try { return JSON.parse(localStorage.getItem("strata.apikey")) || ""; } catch (_) { return ""; } };
+let apiKey = sessionStorage.getItem("strata.monitor.key") || savedKey(), needsKey = false;
 document.documentElement.dataset.theme = localStorage.getItem("strata.theme") || "dark";
 const seconds = n => typeof n === "number" ? `${n.toFixed(2)} s` : "—";
 const speed = n => typeof n === "number" ? n.toFixed(1) : "—";
@@ -71,6 +73,7 @@ async function showDetail() {
   $("detail-error").hidden = !value.error; text("detail-error", value.error?.message || ""); content();
 }
 async function refresh() {
+  if (needsKey && !apiKey) { $("auth").hidden = false; text("updated", "API key needed"); return; }   // no refused calls
   try {
     const [status, history] = await Promise.all([api("/v1/status"), api("/api/requests")]);
     state = status; records = history.requests;
@@ -108,4 +111,4 @@ $("search").oninput = list; $("filter").onchange = list;
 document.querySelectorAll("[data-pane]").forEach(button => { button.onclick = () => { pane = button.dataset.pane; document.querySelectorAll("[data-pane]").forEach(b => b.setAttribute("aria-selected", String(b === button))); content(); }; });
 $("copy").onclick = async () => { try { await navigator.clipboard.writeText($("content").textContent); text("copy", "Copied"); setTimeout(() => text("copy", "Copy"), 1500); } catch (_) { notice("Clipboard unavailable; select the text to copy it."); } };
 async function poll() { await refresh(); setTimeout(poll, 2000); }
-poll();
+fetch("/health", {cache: "no-store"}).then(r => r.json()).then(h => { needsKey = !!h.api_key; }, () => {}).finally(poll);
