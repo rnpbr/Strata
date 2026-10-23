@@ -140,3 +140,57 @@ class Procs(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+SERVER = """import signal, sys, time
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+print("ready", flush=True)
+time.sleep(120)
+"""
+
+
+class ServersOfAnInstall(Procs):
+    """`setup --stop` finds the servers of one install by its serve/server.py, however they were started."""
+
+    def install(self, name: str) -> Path:
+        script = Path(self.temp.name) / name / "serve" / "server.py"
+        script.parent.mkdir(parents=True)
+        script.write_text(SERVER, encoding="utf-8")
+        return script
+
+    def server(self, script: Path, *argv: str, cwd: Path | None = None, module: bool = False):
+        cmd = [sys.executable, "-m", "serve.server", *argv] if module else [sys.executable, str(script), *argv]
+        proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, text=True, creationflags=NO_WINDOW)
+        self.started.append(proc)
+        self.addCleanup(proc.stdout.close)
+        self.assertEqual(proc.stdout.readline().strip(), "ready")       # its SIGTERM handler is in place
+        return proc
+
+    def test_the_command_line_names_the_script(self):
+        root = Path(self.temp.name) / "Strata"
+        script = str(root / "serve" / "server.py")
+        (root / "serve").mkdir(parents=True)
+        Path(script).write_text("", encoding="utf-8")
+        self.assertTrue(procs.runs_server(["python3", script, "--engine", "strata"], None, script))
+        self.assertTrue(procs.runs_server(["python3", "-I", "-u", script], None, script))
+        self.assertTrue(procs.runs_server(["python3", "serve/server.py"], str(root), script))
+        self.assertTrue(procs.runs_server(["python3", "-m", "serve.server", "--port", "8080"], str(root), script))
+        self.assertFalse(procs.runs_server(["python3", "-m", "serve.server"], self.temp.name, script))
+        self.assertFalse(procs.runs_server(["python3", "serve/server.py"], None, script))
+        self.assertFalse(procs.runs_server(["python3", "chat.py", script], str(root), script))
+        self.assertFalse(procs.runs_server(["python3", "-c", "pass", script], None, script))
+
+    @unittest.skipIf(procs.WINDOWS, "SIGTERM and /proc: POSIX")
+    def test_only_this_install_is_found_and_stopped(self):
+        mine, other = self.install("Strata"), self.install("Strata-other")
+        by_path = self.server(mine, "--port", "8080")
+        as_module = self.server(mine, cwd=mine.parent.parent, module=True)
+        stranger = self.server(other)
+        found = {i.pid for i in procs.servers_of(str(mine))}
+        self.assertEqual(found, {by_path.pid, as_module.pid})
+        result = procs.stop_servers(str(mine), grace=10)
+        self.assertEqual(sorted(result["ended"]), sorted([by_path.pid, as_module.pid]))
+        self.assertEqual(result["stuck"], [])
+        self.assertEqual((by_path.wait(timeout=10), as_module.wait(timeout=10)), (0, 0))   # the clean way: SIGTERM
+        self.assertIsNone(stranger.poll())
+        self.assertEqual(procs.servers_of(str(mine)), [])

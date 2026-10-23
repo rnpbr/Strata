@@ -130,6 +130,37 @@ def exe_path(pid: int) -> str | None:
     return None
 
 
+def cwd_of(pid: int) -> str | None:
+    if sys.platform.startswith("linux"):
+        try:
+            return os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            return None
+    if psutil is not None:
+        try:
+            return psutil.Process(pid).cwd() or None
+        except (psutil.Error, OSError):
+            return None
+    return None
+
+
+def owned_by_me(pid: int) -> bool:
+    """The process runs as this user (Windows: always true; the OS refuses what it may not end)."""
+    if WINDOWS:
+        return True
+    if sys.platform.startswith("linux"):
+        try:
+            return os.stat(f"/proc/{pid}").st_uid == os.getuid()
+        except OSError:
+            return False
+    if psutil is not None:
+        try:
+            return psutil.Process(pid).uids().real == os.getuid()
+        except (psutil.Error, OSError):
+            return False
+    return False
+
+
 def same_file(a: str | None, b: str | None) -> bool:
     if not a or not b:
         return False
@@ -372,3 +403,64 @@ def end_orphans(engine_exe: str, *, grace: float = 8.0, say=None) -> list[dict]:
         if say is not None and outcome != "gone":
             say(f"[strata] an engine left behind by an earlier run (pid {ident.pid}) {outcome}")
     return ended
+
+
+# ---------------------------------------------------------------------------- the servers of one install
+
+def _pids() -> list[int]:
+    if sys.platform.startswith("linux"):
+        return [int(x) for x in os.listdir("/proc") if x.isdigit()]
+    if psutil is not None:
+        return psutil.pids()
+    return []
+
+
+def runs_server(cmd: list[str] | tuple[str, ...], cwd: str | None, server_py: str) -> bool:
+    """The command line is Python running exactly `server_py`, as a file (`python serve/server.py`, any interpreter
+    flags before it) or as a module (`python -m serve.server` in its install folder)."""
+    for i, part in enumerate(cmd[1:5], 1):
+        if part == "-m" and i + 1 < len(cmd) and cmd[i + 1] == "serve.server":
+            return cwd is not None and same_file(cwd, str(Path(server_py).parent.parent))
+        if part.endswith(".py"):
+            if not os.path.isabs(part):
+                if cwd is None:
+                    return False
+                part = os.path.join(cwd, part)
+            return same_file(part, server_py)
+        if not part.startswith("-"):
+            return False
+    return False
+
+
+def servers_of(server_py: str) -> list[Ident]:
+    """The running servers of one install (its serve/server.py), however they were started: setup in this or another
+    terminal, nohup, a service. Only this user's, and matched by the script's file, so another install's server is
+    never one."""
+    found = []
+    for pid in _pids():
+        if pid == os.getpid() or not owned_by_me(pid):
+            continue
+        cmd = command_line(pid)
+        if not cmd or not runs_server(cmd, cwd_of(pid), server_py):
+            continue
+        ident = identify(pid)
+        if ident is not None:
+            found.append(ident)
+    return found
+
+
+def stop_servers(server_py: str, *, grace: float = 60.0, say=None) -> dict:
+    """Stop the servers of one install: SIGTERM first, which a server answers the clean way (QUIT to the engine, the
+    picture reader closed), a kill after `grace` seconds; then the engine or picture reader a killed server left (its
+    records). Windows has no polite signal for a console program: the server is ended at once, its job object ends the
+    rest."""
+    result = {"ended": [], "stuck": []}
+    for ident in servers_of(server_py):
+        if say is not None:
+            say(f"  Stopping the server (pid {ident.pid}) and its model ...")
+        record = {"pid": ident.pid, "token": ident.token, "cmd": list(ident.cmd), "role": "server", "written_at": 0}
+        outcome = end_one(record, grace=grace)
+        result["stuck" if outcome == "stuck" else "ended"].append(ident.pid)
+    left = end_leftovers(grace=8.0, say=say)
+    result["stuck"] += [r["pid"] for r in left["stuck"] + left["unverifiable"]]
+    return result

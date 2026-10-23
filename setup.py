@@ -6636,9 +6636,45 @@ def settings_summary(cfg: dict, port=None) -> str:
     return " ".join(out) + ("; " if out else "") + "server " + ", ".join(srv)
 
 
+SERVER_PY = ROOT / "serve" / "server.py"
+STOP_GRACE_S = 60      # the clean stop (SIGTERM): the server QUITs the engine and waits for it, then a kill
+
+
+def again(flags: str) -> str:
+    return ("START-HERE.bat " if WIN else "./setup.sh ") + flags
+
+
+def stop_running() -> int:
+    """--stop: end what this folder serves (see procs.stop_servers)."""
+    from strata_control import procs
+    if not procs.servers_of(str(SERVER_PY)):
+        ok("Strata is not running from this folder")
+        return 0
+    result = procs.stop_servers(str(SERVER_PY), grace=STOP_GRACE_S, say=say)
+    if result["stuck"]:
+        fail("these processes did not stop: " + ", ".join(f"pid {p}" for p in result["stuck"]),
+             "end them with the system's task manager (Linux: kill -9 PID)")
+    ok("Strata stopped")
+    return 0
+
+
 def no_key(value) -> bool:
     """No API key: none set, or "none" (--no-api-key)."""
     return not value or (isinstance(value, str) and value.strip().lower() == "none")
+
+
+def refuse_if_running():
+    """A start, a setup or an update while this folder serves: a second engine (or setup's tuning run) would need the
+    same memory again, and an update would replace the engine under the running one."""
+    if CONTROL:                                          # the app runs its servers itself (strata_control/runtime.py)
+        return
+    from strata_control import procs
+    try:
+        running = procs.servers_of(str(SERVER_PY))
+    except Exception:  # noqa: BLE001 - a check that cannot look stops nothing
+        running = []
+    if running:
+        fail(f"Strata is already running from this folder (pid {running[0].pid})", "stop it first: " + again("--stop"))
 
 
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
@@ -6653,6 +6689,7 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
            layer_split=None, keep=None) -> int:
     """keep: settings given on this start that the model keeps from now on (--host, --api-key, --draft-vocab,
     --vram-reserve-mib)."""
+    refuse_if_running()
     cfg = upgrade_config(cfg_path, json.loads(cfg_path.read_text(encoding="utf-8-sig")))
     missing = [p for p in [cfg["exe"], *[a for a in cfg["args"] if a.endswith(".gguf")]] if not Path(p).exists()]
     if missing:
@@ -7898,7 +7935,7 @@ def main() -> int:
     except Exception:
         pass
     if sys.platform == "darwin" and not CONTROL:       # a Mac: metal/setup_mac.py (the Metal engine); the app (Control mode) goes on below
-        return mac_setup(sys.argv[1:])
+        return stop_running() if "--stop" in sys.argv[1:] else mac_setup(sys.argv[1:])
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--family", choices=list(FAMILIES) + list(PREVIEW_FAMILIES),
                     help="qwen = Qwen3.8-Flash-Next, swift = Swift 1.5, qwen36 = Qwen3.6-35B-A3B (pictures with --vision, "
@@ -7974,6 +8011,9 @@ def main() -> int:
     ap.add_argument("--yes", action="store_true", help="accept the recommended answers")
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
+    ap.add_argument("--stop", action="store_true",
+                    help="stop the model this folder is serving (its server, engine and picture reader), however it was "
+                         "started: another terminal, nohup, a service")
     ap.add_argument("--update", action="store_true",
                     help="update the installed engine, Python packages and model settings as a start would, without "
                          "starting the model (UPDATE.bat / update.sh run it after a git pull)")
@@ -8032,10 +8072,14 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.stop:
+        return stop_running()
     if a.no_api_key:
         if a.api_key:
             ap.error("--api-key or --no-api-key, not both")
         a.api_key = "none"                             # the server's word for "no key, on purpose" (explicit_no_key)
+    if not (a.check or a.inspect):
+        refuse_if_running()
     if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES:
         ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in PREVIEW_FAMILIES.items()
                                                               if a.model in d["models"]))
