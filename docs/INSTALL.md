@@ -134,8 +134,8 @@ where it left off) and **starts the model**. Your browser opens the Strata app a
 
 **Next time**, just double-click `START-HERE.bat` again: it starts right away (30-90 s to load the model), nothing is
 downloaded twice. Close its window to stop the model, or run `START-HERE.bat --stop` from another window
-(Linux, Mac: `./setup.sh --stop`). On Linux, `./setup.sh --background` returns once the model is ready and keeps it
-running after the terminal closes. `SETUP.bat` (the same as `START-HERE.bat --setup`) installs
+(Linux, Mac: `./setup.sh --stop`). On Linux, `./setup.sh --background` starts it in the background and frees the terminal at
+once; closing the terminal does not stop it. `SETUP.bat` (the same as `START-HERE.bat --setup`) installs
 another model or changes the settings. Starting Strata from Task Scheduler at logon needs two task settings, or the
 start is 24x slower: [Running it at startup](DETAILS.md#running-it-at-startup-task-scheduler).
 

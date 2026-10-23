@@ -53,7 +53,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import textwrap
 import threading
 import time
@@ -6642,7 +6641,7 @@ def server_py() -> str:
     return str(ROOT / "serve" / "server.py")
 
 
-BACKGROUND = False     # --background: the start returns once the model is ready (start_in_background)
+BACKGROUND = False     # --background: the start gives the terminal back at once (start_in_background)
 STOP_GRACE_S = 60      # the clean stop (SIGTERM): the server QUITs the engine and waits for it, then a kill
 
 
@@ -6813,8 +6812,8 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
             "GPU.")
     say("  While it does, YOUR PC CAN BE SLOW OR STOP RESPONDING FOR 1-3 MINUTES (longer the first time after a")
     if BACKGROUND:
-        say("  restart). That is normal: please wait - this window says when it is ready.")
-        say("  It runs in the background: closing this window does not stop it, " + again("--stop") + " does.")
+        say("  restart). That is normal. It loads in the background: this window is free at once, and closing it")
+        say("  does not stop the model; " + again("--stop") + " does.")
     else:
         say("  restart). That is normal: please wait and don't close this window - " + (
             "the browser opens when it is ready." if browser else "the server says when it is ready."))
@@ -6831,49 +6830,36 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
     # the server and everything it starts are told, too: nothing in a running model installs or downloads
     env = {**os.environ, acquisition.ENV: "1"}
     if BACKGROUND:
-        return start_in_background(cmd, env, cfg)
+        return start_in_background(cmd, env, cfg, port or cfg.get("port", 8080))
     return subprocess.call(cmd, env=env)
 
 
-def start_in_background(cmd: list, env: dict, cfg: dict) -> int:
-    """--background: the server in a session of its own, so closing the terminal or the ssh connection does not stop it,
-    its output in strata-<model>-server.log beside the engine's log.  Returns once the API answers (the server's
-    --ready-file), or shows why the server stopped; Ctrl+C while it loads stops it."""
+def start_in_background(cmd: list, env: dict, cfg: dict, port: int) -> int:
+    """--background: the server in a session of its own (closing the terminal or the ssh connection does not stop it),
+    its output in strata-<model>-server.log beside the engine's log, and the terminal back at once.  Only a server that
+    stops in its first second (a config it refuses) is shown here; the log says when the model is ready."""
     log = Path(cfg.get("log") or home() / "strata.log")
     log = log.with_name(log.stem + "-server" + log.suffix)
-    ready_dir = Path(tempfile.mkdtemp(prefix="strata-start-"))
-    ready = ready_dir / "ready.json"
     kw = ({"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if WIN
           else {"start_new_session": True})
-    proc = None
+    with open(log, "w", encoding="utf-8") as out:
+        owner_only(log)                                  # like the run config: what it serves is the owner's business
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                env={**env, "PYTHONUNBUFFERED": "1"}, **kw)
     try:
-        with open(log, "w", encoding="utf-8") as out:
-            owner_only(log)                              # like the run config: what it serves is the owner's business
-            proc = subprocess.Popen([*cmd, "--ready-file", str(ready)], stdin=subprocess.DEVNULL, stdout=out,
-                                    stderr=subprocess.STDOUT, env={**env, "PYTHONUNBUFFERED": "1"}, **kw)
-        say(f"  In the background (pid {proc.pid}), its output in {log}")
-        while not ready.exists():
-            if proc.poll() is not None:
-                lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
-                for line in lines[-12:]:
-                    say("    " + line)
-                fail(f"the server stopped while it started (exit {proc.returncode})", f"all of its output: {log}")
-            time.sleep(0.5)
-    except KeyboardInterrupt:
-        if proc is not None and proc.poll() is None:
-            say("  stopping it ...")
-            proc.terminate()                             # SIGTERM: the server's clean stop
-            try:
-                proc.wait(STOP_GRACE_S)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        raise
-    finally:
-        shutil.rmtree(ready_dir, ignore_errors=True)
-    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.startswith("ready:") or "from other devices:" in line or line.strip().startswith("WARNING"):
-            say("  " + line.strip())
-    ok("Strata is running in the background. Stop it with: " + again("--stop"))
+        proc.wait(1)
+    except subprocess.TimeoutExpired:
+        pass
+    else:
+        for line in log.read_text(encoding="utf-8", errors="replace").splitlines()[-12:]:
+            say("    " + line)
+        fail(f"the server stopped at once (exit {proc.returncode})", f"all of its output: {log}")
+    host = cfg.get("host") or "127.0.0.1"
+    ok(f"Strata is starting in the background (pid {proc.pid})")
+    say(f"  Address:  http://127.0.0.1:{port}/" + ("" if host in ("127.0.0.1", "localhost") else
+                                                   f"   (other devices: http://<this computer's IP>:{port}/)"))
+    say(f"  Progress: tail -f {log}   (it says \"ready:\" when the model answers)")
+    say("  Stop it:  " + again("--stop"))
     return 0
 
 
@@ -8067,8 +8053,8 @@ def main() -> int:
     ap.add_argument("--setup", action="store_true", help="install another model or change settings")
     ap.add_argument("--no-start", action="store_true", help="install only, do not start the model")
     ap.add_argument("--background", action="store_true",
-                    help="start the model in the background and return once it is ready: closing the terminal or the "
-                         "ssh connection does not stop it, --stop does")
+                    help="start the model in the background and give the terminal back at once: closing the terminal or "
+                         "the ssh connection does not stop it, --stop does")
     ap.add_argument("--stop", action="store_true",
                     help="stop the model this folder is serving (its server, engine and picture reader), however it was "
                          "started: another terminal, nohup, a service")

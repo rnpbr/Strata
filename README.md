@@ -40,13 +40,13 @@ cd Strata
 Setup compiles the engine (about 20 minutes), downloads the model, the draft layer and the image reader (73 GB),
 writes the experts into one file for the GPU (34 GB, once) and starts the server. `--data-dir PATH` puts the model
 files on another drive. The options below combine with it: one command can also open the server to the network and
-return once it is ready (`--host 0.0.0.0 --api-key "$API_KEY" --background`).
+free the terminal (`--host 0.0.0.0 --api-key "$API_KEY" --background`).
 
 ## Use
 
 ```sh
 ./setup.sh                 # start the server (Ctrl+C stops it)
-./setup.sh --background    # start it in the background: returns once it is ready
+./setup.sh --background    # start it in the background and free the terminal
 ./setup.sh --stop          # stop it from any terminal: server, engine and image reader
 ```
 
