@@ -31,7 +31,7 @@ Branch `jetson-arm64`, based on Strata 0.2.2 (engine 0.1.47). For desktop GPUs, 
 ## Install
 
 ```sh
-sudo apt install -y git build-essential python3-venv
+sudo apt install -y git build-essential
 git clone -b jetson-arm64 https://github.com/rnpbr/Strata.git
 cd Strata
 ./setup.sh --model Q2_0 --data-dir /data/strata --yes
@@ -100,9 +100,8 @@ setup writes; prompts cut from technical English text, temperature 0.
 
 Every setting setup picks was measured against its alternatives (copying the experts into a cache, `--spec` 2/3/5, a
 16K prompt chunk, the KV cache without streaming, images off): none was faster by more than the ~1 tok/s spread between
-runs, and most were slower. Tables and method:
-[Lab Jetson AGX Orin](https://github.com/rnpbr/LabRedes-IARedes/tree/main/Labs/lab-jetson-agx-orin) (in Portuguese).
-The engine settings for these boards are in [docs/DETAILS.md](docs/DETAILS.md#jetson-and-dgx-spark-the-gpu-reads-the-experts-where-they-lie-on-by-default-when-they-fit).
+runs, and most were slower. The engine settings for these boards and the in-place against copy table are in
+[docs/DETAILS.md](docs/DETAILS.md#jetson-and-dgx-spark-the-gpu-reads-the-experts-where-they-lie-on-by-default-when-they-fit).
 
 ## Credits
 
