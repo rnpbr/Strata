@@ -70,25 +70,39 @@ class Issue3403MacBuildTools(unittest.TestCase):
     """The Mac setup compiles without setup.cmake_build(), so cmake and ninja must be installed for it too."""
 
     def test_missing_build_tools_are_installed_before_the_mac_compile(self):
+        import tempfile
         from unittest import mock
         import setup
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "metal"))
-        import setup_mac as M
-        installed = {"cmake": None, "ninja": None}
+        pins = dict(line.split("==") for line in setup.requirement_lines(setup.BUILD_REQUIREMENTS))
+        with tempfile.TemporaryDirectory() as d:
+            bin_ = Path(d) / "bin"
+            bin_.mkdir()
 
-        def find(name):
-            return installed[name]
+            def pip(packages, what, required=True):                 # the pinned versions, next to this Python
+                self.assertTrue(all(p.split("==")[0] in ("cmake", "ninja") for p in packages), packages)
+                for p in packages:
+                    (bin_ / p.split("==")[0]).write_text("")
+                return True
 
-        def pip(packages, what):
-            self.assertTrue(all(p.split("==")[0] in ("cmake", "ninja") for p in packages), packages)
-            for p in packages:
-                installed[p.split("==")[0]] = "/venv/bin/" + p.split("==")[0]
+            with mock.patch.object(setup.sys, "executable", str(bin_ / "python")), \
+                    mock.patch.object(setup, "find_tool", lambda name: "/usr/bin/" + name), \
+                    mock.patch.object(setup.importlib.metadata, "version", lambda name: pins[name]), \
+                    mock.patch.object(setup, "pip_install", side_effect=pip) as pi:
+                # a distribution's own cmake and ninja on PATH are not the pinned ones: those are installed and used
+                self.assertEqual(setup.ensure_build_tools(), (str(bin_ / "cmake"), str(bin_ / "ninja")))
+                self.assertEqual(pi.call_count, 1)
+                setup.ensure_build_tools()                       # present now: nothing more is installed
+                self.assertEqual(pi.call_count, 1)
 
-        with mock.patch.object(setup, "find_tool", side_effect=find), mock.patch.object(setup, "pip_install", side_effect=pip) as pi:
-            self.assertEqual(setup.ensure_build_tools(), ("/venv/bin/cmake", "/venv/bin/ninja"))
-            self.assertEqual(pi.call_count, 1)
-            setup.ensure_build_tools()                       # present now: nothing more is installed
-            self.assertEqual(pi.call_count, 1)
+    def test_offline_the_tools_on_path_are_used(self):
+        import tempfile
+        from unittest import mock
+        import setup
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(setup.sys, "executable", str(Path(d) / "python")), \
+                mock.patch.object(setup, "find_tool", lambda name: "/usr/bin/" + name), \
+                mock.patch.object(setup, "pip_install", return_value=False), mock.patch.object(setup, "say"):
+            self.assertEqual(setup.ensure_build_tools(), ("/usr/bin/cmake", "/usr/bin/ninja"))
 
     def test_both_mac_builds_ask_for_the_tools_first(self):
         import inspect

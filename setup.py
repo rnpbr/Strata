@@ -44,6 +44,7 @@ import ctypes
 import glob
 import hashlib
 import http.client
+import importlib.metadata
 import json
 import math
 import os
@@ -3157,10 +3158,11 @@ def control_missing_packages() -> list:
             if importlib.util.find_spec(m) is None]
 
 
-def pip_install(packages, what, extra=()):
+def pip_install(packages, what, extra=(), required=True):
     """pip install into .venv, skipped when the same list was installed before.  An install from before the pinned
     requirements (#214) recorded bare names: those packages are kept as they are (nothing is reinstalled), and the
-    pinned dependencies it already has count as installed."""
+    pinned dependencies it already has count as installed.  required=False: a failed install (offline) is a warning
+    and False, not the end of setup."""
     if CONTROL:                                        # the app ships these (hash-locked); nothing is installed here
         missing = control_missing_packages()
         if missing:
@@ -3177,9 +3179,14 @@ def pip_install(packages, what, extra=()):
         return
     acquisition.require(what)
     say(f"  Installing {what} ...")
-    run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", *extra, *need])
+    r = run([sys.executable, "-m", "pip", "install", "--quiet", "--disable-pip-version-check", *extra, *need],
+            check=required)
+    if r is not None and r.returncode != 0:            # only when not required (a test double answers None)
+        warn(f"{what} could not be installed")
+        return False
     stamp.write_text(json.dumps(sorted(set(have) | set(need)), indent=0))
     ok(f"{what} installed")
+    return True
 
 
 NVFP4_LOCAL_REQUIREMENTS = ROOT / "requirements-nvfp4-local.txt"
@@ -5347,15 +5354,31 @@ def install_build_tools(gpu, yes):
 
 
 def ensure_build_tools():
-    """cmake and ninja for a local compile, installed from requirements-build.txt when missing (#3403: the Mac setup
-    compiles without cmake_build(), so it calls this too).  Returns (cmake, ninja)."""
-    # The ready-made engine path never calls this function. Keep build helpers out of
-    # the normal serving environment, and use already installed tools offline.
+    """cmake and ninja for a local compile: the versions requirements-build.txt pins, next to this Python, so a build
+    uses the same tools on every PC (a distribution's older copy on PATH - Ubuntu 24.04: CMake 3.28, Ninja 1.11 - only
+    when the pinned ones cannot be installed, offline).  #3403: the Mac setup compiles without cmake_build(), so it
+    calls this too.  Returns (cmake, ninja)."""
+    # The ready-made engine path never calls this function: build helpers stay out of the normal serving environment.
     build_packages = requirement_lines(BUILD_REQUIREMENTS) if BUILD_REQUIREMENTS.exists() else BUILD_PACKAGES
-    missing = [package for package in build_packages if find_tool(req_name(package)) is None]
-    if missing:
-        pip_install(missing, "CMake and Ninja build tools")
-    cmake, ninja = find_tool("cmake"), find_tool("ninja")
+    here = [d for d in (Path(sys.executable).parent / "Scripts", Path(sys.executable).parent) if d.is_dir()]
+
+    def pinned(name):
+        exe = name + (".exe" if WIN else "")
+        return next((str(d / exe) for d in here if (d / exe).is_file()), None)
+
+    def current():
+        for line in build_packages:
+            want = line.split(";")[0].split("==")[1].strip() if "==" in line else None
+            try:
+                if pinned(req_name(line)) is None or (want and importlib.metadata.version(req_name(line)) != want):
+                    return False
+            except importlib.metadata.PackageNotFoundError:
+                return False
+        return True
+
+    if not current() and not pip_install(build_packages, "the pinned CMake and Ninja", required=False):
+        say("  using the CMake and Ninja on PATH")
+    cmake, ninja = pinned("cmake") or find_tool("cmake"), pinned("ninja") or find_tool("ninja")
     if cmake is None or ninja is None:
         fail("cmake / ninja not found after installing them", "run: .venv python -m pip install -r requirements-build.txt")
     return cmake, ninja
