@@ -100,6 +100,7 @@ class Update(unittest.TestCase):
                     mock.patch.object(setup, "installed_configs", return_value=[p]), \
                     mock.patch.object(setup, "update_install", return_value=0) as up, \
                     mock.patch.object(setup, "start") as start, \
+                    mock.patch.object(setup, "refuse_if_running", lambda: None), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(setup.main(), 0)
         up.assert_called_once()
@@ -134,6 +135,7 @@ class SettingsLine(unittest.TestCase):
                     mock.patch.object(setup, "refresh_draft_vocab"), \
                     mock.patch.object(setup, "is_wsl", lambda: False), \
                     mock.patch.object(setup.subprocess, "call", return_value=0), \
+                    mock.patch.object(setup, "refuse_if_running", lambda: None), \
                     contextlib.redirect_stdout(out):
                 setup.start(p, None, open_browser=False, yes=True)
         text = " ".join(out.getvalue().split())

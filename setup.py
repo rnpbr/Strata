@@ -6636,7 +6636,11 @@ def settings_summary(cfg: dict, port=None) -> str:
     return " ".join(out) + ("; " if out else "") + "server " + ", ".join(srv)
 
 
-SERVER_PY = ROOT / "serve" / "server.py"
+def server_py() -> str:
+    """This folder's server script: what --stop and the second-start check look for (ROOT when they run)."""
+    return str(ROOT / "serve" / "server.py")
+
+
 STOP_GRACE_S = 60      # the clean stop (SIGTERM): the server QUITs the engine and waits for it, then a kill
 
 
@@ -6647,10 +6651,10 @@ def again(flags: str) -> str:
 def stop_running() -> int:
     """--stop: end what this folder serves (see procs.stop_servers)."""
     from strata_control import procs
-    if not procs.servers_of(str(SERVER_PY)):
+    if not procs.servers_of(server_py()):
         ok("Strata is not running from this folder")
         return 0
-    result = procs.stop_servers(str(SERVER_PY), grace=STOP_GRACE_S, say=say)
+    result = procs.stop_servers(server_py(), grace=STOP_GRACE_S, say=say)
     if result["stuck"]:
         fail("these processes did not stop: " + ", ".join(f"pid {p}" for p in result["stuck"]),
              "end them with the system's task manager (Linux: kill -9 PID)")
@@ -6670,7 +6674,7 @@ def refuse_if_running():
         return
     from strata_control import procs
     try:
-        running = procs.servers_of(str(SERVER_PY))
+        running = procs.servers_of(server_py())
     except Exception:  # noqa: BLE001 - a check that cannot look stops nothing
         running = []
     if running:

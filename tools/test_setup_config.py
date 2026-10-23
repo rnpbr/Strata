@@ -264,7 +264,8 @@ class NoBrowser(unittest.TestCase):
             with unittest.mock.patch.object(setup, "gpus", lambda: self.found), \
                     unittest.mock.patch.object(setup, "is_wsl", lambda: False), \
                     unittest.mock.patch.object(setup, "ensure_engine_for", lambda cards, path, c, yes: c), \
-                    unittest.mock.patch.object(setup.subprocess, "call", call):
+                    unittest.mock.patch.object(setup.subprocess, "call", call), \
+                    unittest.mock.patch.object(setup, "refuse_if_running", lambda: None):
                 _, out = quiet(setup.start, p, None, None, True, True, None, keep)
             return call.call_args[0][0], out, json.loads(p.read_text())
 
