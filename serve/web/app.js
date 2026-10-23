@@ -148,6 +148,7 @@ async function tryKey(k) {
   return true;
 }
 $("api-key").onchange = () => { const k = $("api-key").value.trim(); if (k) tryKey(k); else store.set("apikey", ""); };
+$("api-key-form").onsubmit = (e) => { e.preventDefault(); $("api-key").blur(); };
 $("key-ask").onsubmit = async (e) => {
   e.preventDefault();
   const k = $("key-ask-input").value.trim();
@@ -335,7 +336,11 @@ function renderTotals(t) {
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // model state
   const on = live.queued > 0 ? "queued" : live.state;
-  for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
+  for (const b of document.querySelectorAll("#state-badges .st-badge")) {
+    const now = b.dataset.s === on || b.dataset.s === live.state;
+    b.classList.toggle("on", now);
+    if (now) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current");
+  }
   const prog = $("state-progress");
   let label = "Waiting for a request", detail = "", pct = 0;
   if (live.state === "reading") {
@@ -1170,12 +1175,12 @@ $("input").addEventListener("paste", (e) => {
 // ------------------------------------------------------------------ the sampling drawer
 function openDrawer(open) {
   $("drawer").dataset.open = String(open);
-  $("drawer").setAttribute("aria-hidden", String(!open));
+  $("drawer").inert = !open;
   $("scrim").hidden = !open;
   if (open) { loadDrawer(); loadShared(); loadMcp(); }
 }
 function loadDrawer(s = settings) {
-  for (const b of $("s-thinking").children) b.setAttribute("aria-checked", String(b.dataset.v === s.thinking));
+  for (const r of $("s-thinking").querySelectorAll("input")) r.checked = r.value === s.thinking;
   $("s-temp").value = s.temperature; $("s-topp").value = s.top_p; $("s-topk").value = s.top_k;
   $("s-max").value = s.max; $("s-seed").value = s.seed;
   $("s-show").setAttribute("aria-checked", String(!!s.show));
@@ -1223,11 +1228,11 @@ function outputs() {
   $("o-temp").textContent = t === 0 ? "0 · greedy" : t.toFixed(2);
   $("o-topp").textContent = (+$("s-topp").value).toFixed(2);
   $("o-topk").textContent = $("s-topk").value;
-  const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
-  $("o-thinking").textContent = sel ? {none: "answers right away", low: "short", medium: "medium", high: "thorough (default)"}[sel.dataset.v] : "";
+  const sel = $("s-thinking").querySelector("input:checked");
+  $("o-thinking").textContent = sel ? {none: "answers right away", low: "short", medium: "medium", high: "thorough (default)"}[sel.value] : "";
   for (const id of ["s-topp", "s-topk"]) $(id).disabled = t === 0;
 }
-for (const b of $("s-thinking").children) b.onclick = () => { for (const x of $("s-thinking").children) x.setAttribute("aria-checked", String(x === b)); outputs(); };
+$("s-thinking").onchange = outputs;
 for (const id of ["s-temp", "s-topp", "s-topk"]) $(id).oninput = outputs;
 $("s-show").onclick = () => $("s-show").setAttribute("aria-checked", String($("s-show").getAttribute("aria-checked") !== "true"));
 $("s-esp").onclick = () => $("s-esp").setAttribute("aria-checked", String($("s-esp").getAttribute("aria-checked") !== "true"));
@@ -1235,8 +1240,8 @@ $("s-mcp").onclick = () => $("s-mcp").setAttribute("aria-checked", String($("s-m
 $("s-share").onclick = () => $("s-share").setAttribute("aria-checked", String($("s-share").getAttribute("aria-checked") !== "true"));
 $("s-reset").onclick = () => loadDrawer(DEFAULTS);
 $("s-apply").onclick = async () => {
-  const sel = [...$("s-thinking").children].find((b) => b.getAttribute("aria-checked") === "true");
-  settings = {thinking: sel ? sel.dataset.v : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
+  const sel = $("s-thinking").querySelector("input:checked");
+  settings = {thinking: sel ? sel.value : "high", temperature: +$("s-temp").value, top_p: +$("s-topp").value,
               top_k: +$("s-topk").value, max: $("s-max").value.trim(), seed: $("s-seed").value.trim(),
               show: $("s-show").getAttribute("aria-checked") === "true",
               esp: $("s-esp").getAttribute("aria-checked") === "true",

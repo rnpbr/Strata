@@ -10,7 +10,7 @@ a{color:var(--st-accent-text);text-decoration:none} a:hover{text-decoration:unde
 
 /* header */
 .st-header{display:flex;align-items:center;gap:var(--st-s-4);height:60px;padding:0 var(--st-s-6);background:var(--st-surface);border-bottom:1px solid var(--st-line)}
-.st-header__brand{font-weight:900;font-size:var(--st-fs-lg);letter-spacing:-.01em}
+.st-header__brand{margin:0;font-weight:900;font-size:var(--st-fs-lg);letter-spacing:-.01em}
 .st-header__spacer{flex:1}
 
 /* status pill */
@@ -63,7 +63,7 @@ a{color:var(--st-accent-text);text-decoration:none} a:hover{text-decoration:unde
 .st-msg{display:flex;flex-direction:column;gap:6px;max-width:720px}
 .st-msg--user{align-self:flex-end;align-items:flex-end}
 .st-bubble{padding:12px 16px;border-radius:var(--st-r-lg);font-size:var(--st-fs-base);line-height:1.55;color:var(--st-ink-soft)}
-.st-msg--user .st-bubble{background:var(--st-accent);color:var(--st-accent-ink);border-bottom-right-radius:6px}
+.st-msg--user .st-bubble{background:var(--st-accent-fill);color:var(--st-accent-ink);border-bottom-right-radius:6px}
 .st-msg--assistant .st-bubble{background:var(--st-surface);border:1px solid var(--st-line);border-bottom-left-radius:6px}
 .st-msg__meta{font-size:var(--st-fs-xs);color:var(--st-ink-muted);display:flex;gap:8px;align-items:center}
 
@@ -97,8 +97,8 @@ a{color:var(--st-accent-text);text-decoration:none} a:hover{text-decoration:unde
 /* buttons */
 .st-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:42px;padding:0 18px;border-radius:var(--st-r-md);border:0;font:700 var(--st-fs-md)/1 var(--st-font);cursor:pointer;transition:background var(--st-dur),transform 120ms}
 .st-btn:active{transform:translateY(1px)}
-.st-btn--primary{background:var(--st-accent);color:var(--st-accent-ink);box-shadow:0 6px 16px rgba(16,185,129,.24),inset 0 1px 0 rgba(255,255,255,.18)}
-.st-btn--primary:hover{background:var(--st-accent-hover)}
+.st-btn--primary{background:var(--st-accent-fill);color:var(--st-accent-ink);box-shadow:0 6px 16px rgba(16,185,129,.24),inset 0 1px 0 rgba(255,255,255,.18)}
+.st-btn--primary:hover{background:var(--st-accent-fill-hover)}
 .st-btn--secondary{background:transparent;color:var(--st-ink);border:1.5px solid var(--st-line)}
 .st-btn--secondary:hover{background:var(--st-surface-2)}
 .st-btn--danger{background:var(--st-danger-tint);color:var(--st-danger-text)}

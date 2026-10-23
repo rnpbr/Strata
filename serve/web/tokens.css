@@ -39,6 +39,8 @@
   --st-accent:#10b981;
   --st-accent-hover:#0c8a60;
   --st-accent-ink:#ffffff;
+  --st-accent-fill:#047857;      /* accent under text: white on it is 5.5:1 (#10b981 is 2.5:1) */
+  --st-accent-fill-hover:#065f46;
   --st-accent-tint:#ecfdf5;
   --st-accent-text:#0c8a60;      /* accent used as text on light */
   --st-focus:#405de6;
@@ -70,6 +72,8 @@
   --st-accent:#34d399;
   --st-accent-hover:#4ade80;
   --st-accent-ink:#052e20;
+  --st-accent-fill:#34d399;
+  --st-accent-fill-hover:#4ade80;
   --st-accent-tint:rgba(52,211,153,.12);
   --st-accent-text:#4ade80;
   --st-focus:#7b93ff;
