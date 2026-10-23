@@ -6075,6 +6075,10 @@ def carry_over(old: dict, cfg: dict, explicit: list[str] | None = None) -> list[
         if k not in SETUP_KEYS and k not in cfg:
             cfg[k] = v
             kept.append(k)
+    for k in ("host", "api_key"):                      # the network access: kept until a run sets another
+        if k not in cfg and old.get(k) is not None:
+            cfg[k] = old[k]
+            kept.append(k.replace("_", " "))
     mine = SETUP_ENV if "-unsloth-" in str(cfg.get("model_name") or "") else SETUP_ENV - SETUP_ENV_UNSLOTH
     env = {k: v for k, v in (old.get("env") or {}).items() if k not in mine and k not in (cfg.get("env") or {})} \
         if isinstance(old.get("env"), dict) else {}
@@ -9213,9 +9217,10 @@ def main() -> int:
     say("All set.")
     say(f"  API (OpenAI):     http://127.0.0.1:{port}/v1   (any API key; model name: anything)")
     say(f"  API (Anthropic):  http://127.0.0.1:{port}/v1/messages")
-    if a.host and a.host not in ("127.0.0.1", "localhost"):
+    host = cfg.get("host")                             # this run's --host, or the one kept from before (carry_over)
+    if host and host not in ("127.0.0.1", "localhost"):
         say(f"  Other devices:    the server window prints this PC's address (http://<IP>:{port}/)"
-            + (" - no API key set: anyone on your network can use it" if no_key(a.api_key) else ""))
+            + (" - no API key set: anyone on your network can use it" if no_key(cfg.get("api_key")) else ""))
     say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")
     if vision != "none":
         say("  Images:           send them in the chat page, in chat.py (/image <path>) or over the API")

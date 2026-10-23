@@ -74,9 +74,26 @@ class CarryOver(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertEqual(cfg["model_name"], first["model_name"])
         self.assertEqual(cfg["port"], first["port"])
-        self.assertNotIn("host", cfg)                                     # as before: --host is given to setup
+        self.assertEqual(cfg["host"], "0.0.0.0")                          # the network access stays until a run sets another
         self.assertEqual(cfg["draft_vocab"], "en")                        # kept by its own rule (saved_draft_vocab)
-        self.assertNotIn("kept from", out)
+        self.assertIn("kept from your earlier strata-q2_0.json: host", out)
+
+    def test_the_network_access_is_kept_until_changed(self):
+        code, out, first, _ = self.run_setup()
+        old = {**first, "host": "0.0.0.0", "api_key": "earlier-key"}
+        code, out, cfg, _ = self.run_setup(configs=[("strata-q2_0.json", old)])
+        self.assertEqual(code, 0, out)
+        self.assertEqual((cfg["host"], cfg["api_key"]), ("0.0.0.0", "earlier-key"))     # a --setup without them
+        self.assertNotIn("earlier-key", out)                              # named, never printed
+        code, out, cfg, _ = self.run_setup("--api-key", "new-key", configs=[("strata-q2_0.json", old)])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["api_key"], "new-key")
+        code, out, cfg, _ = self.run_setup("--no-api-key", configs=[("strata-q2_0.json", old)])
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["api_key"], "none")                          # the server's "no key, on purpose"
+        self.assertIn("no API key set", out)
+        code, out, cfg, _ = self.run_setup("--host", "127.0.0.1", configs=[("strata-q2_0.json", old)])
+        self.assertEqual((cfg["host"], cfg["api_key"]), ("127.0.0.1", "earlier-key"))
 
     def test_no_api_key(self):
         code, out, cfg, _ = self.run_setup("--host", "0.0.0.0", "--no-api-key")
