@@ -45,6 +45,7 @@ files on another drive.
 
 ```sh
 ./setup.sh                 # start the server (Ctrl+C stops it)
+./setup.sh --stop          # stop it from any terminal: server, engine and image reader
 ```
 
 - Web page: http://127.0.0.1:8080 (chat with pictures, a monitor of the board, settings)
@@ -55,9 +56,17 @@ curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/jso
   -d '{"model": "strata", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-From other machines on the network: `./setup.sh --setup --host 0.0.0.0 --api-key YOUR_KEY`, then `./setup.sh`. The API key
-is the server's password: every client sends it, and the web page asks for it once and keeps it in the browser. On
-`127.0.0.1` no key is needed.
+From other machines on the network:
+
+```sh
+python3 -c "import secrets; print(secrets.token_urlsafe(24))"   # a new key: keep it for your clients
+./setup.sh --setup --host 0.0.0.0 --api-key 'THE_KEY'
+./setup.sh
+```
+
+The API key is the server's password: every client sends it, and the web page asks for it once and keeps it in the
+browser. Later setup runs keep the host and the key until you give others. On `127.0.0.1` no key is needed.
+`--no-api-key` serves the network without one: anyone who reaches the port can use the model.
 
 Coding agents (OpenCode, Codex CLI, Claude Code): [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
 
