@@ -15,6 +15,34 @@ from typing import Any
 
 
 MAX_BODY = 2 * 1024 * 1024
+MAX_DEPTH = 64          # telemetry nests a few levels; a deeper body is refused before json parses it
+
+
+def json_depth(body: bytes, limit: int = MAX_DEPTH) -> int:
+    """How deep the body's arrays and objects nest (brackets inside strings do not count), up to limit + 1.  Bounded here
+    because the parser's own limit is the interpreter's: Python 3.12 stopped at a few thousand levels with a
+    RecursionError, 3.14 parses 20,000."""
+    depth = top = 0
+    in_str = esc = False
+    for b in body:
+        if in_str:
+            if esc:
+                esc = False
+            elif b == 0x5C:                                # backslash
+                esc = True
+            elif b == 0x22:                                # closing quote
+                in_str = False
+        elif b == 0x22:
+            in_str = True
+        elif b in (0x5B, 0x7B):                            # [ {
+            depth += 1
+            if depth > top:
+                top = depth
+                if top > limit:
+                    break
+        elif b in (0x5D, 0x7D):                            # ] }
+            depth -= 1
+    return top
 
 
 def complete_slots(work: dict) -> list[dict] | None:
@@ -123,6 +151,8 @@ class Endpoint:
             raise ClientError(f"telemetry request failed: HTTP {e.code}", http_status=e.code) from e
         except (urllib.error.URLError, TimeoutError, socket.timeout, OSError) as e:
             raise ClientError(f"cannot reach Strata server: {type(e).__name__}") from e
+        if json_depth(body) > MAX_DEPTH:
+            raise ClientError("server returned malformed JSON telemetry")
         try:
             data = json.loads(body)
         except (ValueError, UnicodeDecodeError, RecursionError) as e:
