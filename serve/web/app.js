@@ -484,9 +484,13 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   $("req-totals").textContent = renderTotals(totals);
 }
 
+const factsShown = new WeakMap();
 function facts(el, rows) {
-  el.innerHTML = rows.filter((r) => r[1] != null && r[1] !== "").map(([k, v, copy]) =>
+  const html = rows.filter((r) => r[1] != null && r[1] !== "").map(([k, v, copy]) =>
     `<dt>${esc(k)}</dt><dd>${copy ? `<code>${esc(v)}</code><button class="st-btn st-btn--icon" data-copy="${esc(v)}" aria-label="Copy">${icon("copy")}</button>` : esc(v)}</dd>`).join("");
+  if (factsShown.get(el) === html) return;         // every metrics tick calls this: rebuilt only when it changed
+  factsShown.set(el, html);
+  el.innerHTML = html;
 }
 // INFO cvec=project:4-44[:singleL] | add:A-B | 0
 function projectionText(c) {
