@@ -70,6 +70,14 @@ browser. Later starts and setup runs keep the host and the key until you give ot
 needed.
 `--no-api-key` serves the network without one: anyone who reaches the port can use the model.
 
+To update: stop it, then pull and compile what changed (setup refuses an update while the model runs).
+
+```sh
+./setup.sh --stop
+git pull
+./setup.sh --update
+```
+
 Coding agents (OpenCode, Codex CLI, Claude Code): [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
 
 On a Jetson the monitor shows the board as it is: memory shared by the CPU and the GPU (the experts read in place
