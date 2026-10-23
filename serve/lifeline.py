@@ -100,10 +100,10 @@ for s in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM):
     signal.signal(s, signal.SIG_IGN)               # it ends with its pipe, not with the terminal
 def start_of(p):
     try:
-        out = subprocess.run(["ps", "-o", "lstart=,stat=", "-p", str(p)], capture_output=True, text=True, timeout=5).stdout.strip()
+        out = subprocess.run(["ps", "-o", "lstart=,stat=", "-p", str(p)], capture_output=True, text=True, timeout=5).stdout.split()
     except Exception:
         return None
-    return None if not out or out.endswith("Z") else "s:" + out
+    return None if len(out) < 2 or out[-1].startswith("Z") else "s:" + " ".join(out[:-1])
 os.set_blocking(0, True)
 data = b""
 while True:
@@ -134,12 +134,15 @@ _watchers_lock = threading.Lock()
 
 
 def _start_token(pid: int) -> str:
+    """The process's start time as ps prints it; "" for a zombie or a process ps cannot see.  Only the start time is
+    the identity: the state (stat) is read to tell a zombie, and it changes all the time (R while the child starts, S
+    once it waits), so a token with it did not match the same process later and the watcher left it running."""
     try:
         out = subprocess.run(["ps", "-o", "lstart=,stat=", "-p", str(pid)], capture_output=True, text=True,
-                             timeout=5).stdout.strip()
+                             timeout=5).stdout.split()
     except (OSError, subprocess.SubprocessError):
         return ""
-    return "" if not out or out.endswith("Z") else "s:" + out
+    return "" if len(out) < 2 or out[-1].startswith("Z") else "s:" + " ".join(out[:-1])
 
 
 def _watch(child: subprocess.Popen) -> None:
