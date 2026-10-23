@@ -6619,7 +6619,9 @@ def settings_summary(cfg: dict, port=None) -> str:
             continue                                   # a path: --native, --mtp, --profile ...
         out.append(flag if val is None else f"{flag} {val}")
     srv = [f"{cfg.get('host', '127.0.0.1')}:{port or cfg.get('port', 8080)}"]
-    if cfg.get("api_key"):
+    if cfg.get("api_key") and no_key(cfg["api_key"]):    # "none": no key on purpose (--no-api-key)
+        srv.append("no api key")
+    elif cfg.get("api_key"):
         srv.append("api key set")
     if cfg.get("open_browser") is False:               # #609
         srv.append("no browser")
@@ -6628,6 +6630,11 @@ def settings_summary(cfg: dict, port=None) -> str:
             v = cfg[k]
             srv.append(f"{k} {','.join(map(str, v)) if isinstance(v, list) else str(v).lower() if isinstance(v, bool) else v}")
     return " ".join(out) + ("; " if out else "") + "server " + ", ".join(srv)
+
+
+def no_key(value) -> bool:
+    """No API key: none set, or "none" (--no-api-key)."""
+    return not value or (isinstance(value, str) and value.strip().lower() == "none")
 
 
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
@@ -6663,7 +6670,7 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
         cfg.update(keep)
         write_config(cfg_path, cfg)
         ok("saved for this model: " + ", ".join(
-            "api key" if k == "api_key" else ("the browser opens" if v else "no browser") if k == "open_browser"
+            ("no api key" if no_key(v) else "api key") if k == "api_key" else ("the browser opens" if v else "no browser") if k == "open_browser"
             else f"{k.replace('_', ' ')} {v}" for k, v in keep.items()))
     cfg_path.touch()                                     # the most recently used model
     if "--mtp" in cfg["args"][:-1] and not own_path_config(cfg):
@@ -7942,6 +7949,9 @@ def main() -> int:
     ap.add_argument("--host", help="where the server listens: 127.0.0.1 = this PC only (default), 0.0.0.0 = also other "
                                    "devices on your network (issue #26; an --api-key is recommended)")
     ap.add_argument("--api-key", help="require this key from clients (recommended with --host 0.0.0.0); several keys: key1,key2")
+    ap.add_argument("--no-api-key", action="store_true",
+                    help="serve without an API key, also on the network (anyone who can reach the port can use the model); "
+                         "drops a key set up before")
     ap.add_argument("--no-browser", dest="browser", action="store_false", default=None,
                     help="do not open the chat page in the browser when the model is ready (for a harness or an app "
                          "that uses the API; remembered for this model, also in run-<model>.bat/.sh)")
@@ -8018,6 +8028,10 @@ def main() -> int:
                          "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
+    if a.no_api_key:
+        if a.api_key:
+            ap.error("--api-key or --no-api-key, not both")
+        a.api_key = "none"                             # the server's word for "no key, on purpose" (explicit_no_key)
     if a.model and a.model not in MODELS and a.family not in PREVIEW_FAMILIES:
         ap.error(f"--model {a.model} is a size of " + ", ".join(f"--family {f}" for f, d in PREVIEW_FAMILIES.items()
                                                               if a.model in d["models"]))
@@ -9201,7 +9215,7 @@ def main() -> int:
     say(f"  API (Anthropic):  http://127.0.0.1:{port}/v1/messages")
     if a.host and a.host not in ("127.0.0.1", "localhost"):
         say(f"  Other devices:    the server window prints this PC's address (http://<IP>:{port}/)"
-            + ("" if a.api_key else " - no API key set: anyone on your network can use it"))
+            + (" - no API key set: anyone on your network can use it" if no_key(a.api_key) else ""))
     say(f"  Next time:        just run {'START-HERE.bat' if WIN else './setup.sh'} (or {script.name}) - it starts right away")
     if vision != "none":
         say("  Images:           send them in the chat page, in chat.py (/image <path>) or over the API")

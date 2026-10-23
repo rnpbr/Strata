@@ -78,6 +78,12 @@ class CarryOver(unittest.TestCase):
         self.assertEqual(cfg["draft_vocab"], "en")                        # kept by its own rule (saved_draft_vocab)
         self.assertNotIn("kept from", out)
 
+    def test_no_api_key(self):
+        code, out, cfg, _ = self.run_setup("--host", "0.0.0.0", "--no-api-key")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(cfg["api_key"], "none")                          # the server's "no key, on purpose"
+        self.assertIn("no API key set: anyone on your network can use it", out)
+
     def test_write_setup_config(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "strata-x.json"
