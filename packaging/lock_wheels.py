@@ -90,15 +90,33 @@ def _dropped_for_target(target: str) -> set[str]:
     return dropped - kept
 
 
+def direct_requirements(target: str) -> list[str]:
+    """The direct requirements that apply to the target, markers already evaluated for it: pip evaluates them for the
+    host that runs this script, so a Windows-only package (colorama) was left out of a Windows lock made on Linux."""
+    from packaging.requirements import Requirement
+    env = {"python_version": PYTHON, "python_full_version": PYTHON + ".9", "implementation_name": "cpython",
+           "platform_python_implementation": "CPython", **TARGETS[target]["env"]}
+    out = []
+    for name in INPUTS:
+        for line in (ROOT / name).read_text(encoding="utf-8").splitlines():
+            line = line.split(" #")[0].strip()
+            if not line or line.startswith("#"):
+                continue
+            req = Requirement(line)
+            if req.marker is None or req.marker.evaluate(env):
+                out.append(f"{req.name}{'[' + ','.join(sorted(req.extras)) + ']' if req.extras else ''}{req.specifier}")
+    return out
+
+
 def build_lock(target: str) -> str:
     spec = TARGETS[target]
     with tempfile.TemporaryDirectory(prefix="strata-lock-") as tmp:
+        reqs = Path(tmp) / "requirements.txt"
+        reqs.write_text("\n".join(direct_requirements(target)) + "\n", encoding="utf-8")
         cmd = [sys.executable, "-m", "pip", "download", "--quiet", "--only-binary=:all:",
-               "--python-version", PYTHON, "--implementation", "cp", "--abi", ABI, "-d", tmp]
+               "--python-version", PYTHON, "--implementation", "cp", "--abi", ABI, "-d", tmp, "-r", str(reqs)]
         for p in spec["platforms"]:
             cmd += ["--platform", p]
-        for name in INPUTS:
-            cmd += ["-r", str(ROOT / name)]
         subprocess.run(cmd, check=True)
         wheels: dict[str, tuple[str, list[str]]] = {}
         for whl in sorted(Path(tmp).glob("*.whl")):
@@ -106,7 +124,7 @@ def build_lock(target: str) -> str:
             wheels.setdefault(norm(name), (version, []))[1].append(sha256(whl))
     drop = _dropped_for_target(target)
     out = [
-        "# Hash-pinned runtime packages for the " + target + " terminal archive (CPython 3.12, " + ABI + ").",
+        "# Hash-pinned runtime packages for the " + target + " terminal archive (CPython " + PYTHON + ", " + ABI + ").",
         "# Made by packaging/lock_wheels.py from requirements.txt + requirements-monitor.txt; installed at BUILD time with",
         "#   pip install --require-hashes --no-deps --only-binary=:all: -r <this file>",
         "# and never on the user's PC. To change a package: edit requirements.txt, run lock_wheels.py, review the diff.",
