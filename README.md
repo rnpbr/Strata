@@ -39,12 +39,14 @@ cd Strata
 
 Setup compiles the engine (about 20 minutes), downloads the model, the draft layer and the image reader (73 GB),
 writes the experts into one file for the GPU (34 GB, once) and starts the server. `--data-dir PATH` puts the model
-files on another drive.
+files on another drive. The options below combine with it: one command can also open the server to the network and
+return once it is ready (`--host 0.0.0.0 --api-key "$API_KEY" --background`).
 
 ## Use
 
 ```sh
 ./setup.sh                 # start the server (Ctrl+C stops it)
+./setup.sh --background    # start it in the background: returns once it is ready
 ./setup.sh --stop          # stop it from any terminal: server, engine and image reader
 ```
 
@@ -59,13 +61,13 @@ curl http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/jso
 From other machines on the network:
 
 ```sh
-python3 -c "import secrets; print(secrets.token_urlsafe(24))"   # a new key: keep it for your clients
-./setup.sh --setup --host 0.0.0.0 --api-key 'THE_KEY'
-./setup.sh
+API_KEY=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))")   # a new key: keep it for your clients
+./setup.sh --host 0.0.0.0 --api-key "$API_KEY" --background                # starts it and keeps both for later starts
 ```
 
 The API key is the server's password: every client sends it, and the web page asks for it once and keeps it in the
-browser. Later setup runs keep the host and the key until you give others. On `127.0.0.1` no key is needed.
+browser. Later starts and setup runs keep the host and the key until you give others. On `127.0.0.1` no key is
+needed.
 `--no-api-key` serves the network without one: anyone who reaches the port can use the model.
 
 Coding agents (OpenCode, Codex CLI, Claude Code): [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
