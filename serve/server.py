@@ -8519,4 +8519,8 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:                          # asked to stop (Ctrl+C, SIGTERM, setup --stop) while the model loaded
+        print("[strata] stopped while the model was loading", flush=True)
+        sys.exit(130)
