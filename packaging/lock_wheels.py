@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the hash-pinned runtime lock of one terminal target.
 
-The terminal archive installs its Python packages from `packaging/locks/runtime-<target>-cp312.txt` with
+The terminal archive installs its Python packages from `packaging/locks/runtime-<target>-cp314.txt` with
 `pip install --require-hashes --no-deps --only-binary=:all:`: every package, direct or not, is named with an exact
 version and the SHA-256 of the wheel(s) accepted for it, so a build can only ever install the files this lock lists.
 The lock is made here, from `requirements.txt` + `requirements-monitor.txt` (the direct, version-pinned runtime
@@ -42,8 +42,8 @@ TARGETS = {
                                    "macosx_14_0_arm64"],
                      "env": {"sys_platform": "darwin", "platform_system": "Darwin", "os_name": "posix"}},
 }
-PYTHON = "3.12"
-ABI = "cp312"
+PYTHON = "3.14"
+ABI = "cp314"
 
 
 def lock_path(target: str) -> Path:
@@ -66,7 +66,7 @@ def _dropped_for_target(target: str) -> set[str]:
     """Direct requirements whose environment marker is false for the target (pip evaluated markers for the host that
     runs this script: a Windows-only package must not land in the Linux lock, nor the reverse)."""
     from packaging.requirements import Requirement
-    env = {"python_version": PYTHON, "python_full_version": PYTHON + ".15", "implementation_name": "cpython",
+    env = {"python_version": PYTHON, "python_full_version": PYTHON + ".9", "implementation_name": "cpython",
            "platform_python_implementation": "CPython", **TARGETS[target]["env"]}
     dropped = set()
     for name in INPUTS:

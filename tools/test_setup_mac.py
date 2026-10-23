@@ -189,10 +189,11 @@ class HandOver(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 setup.main()
 
-    def test_setup_sh_fetches_a_pinned_python_on_macos_only(self):
+    def test_setup_sh_fetches_the_pinned_python_on_a_mac(self):
+        # the Mac's system Python is 3.9: setup.sh brings the pinned one (tests/terminal/test_packaging_pins.py checks
+        # that it is the Terminal archive's, URL and digest)
         sh = (ROOT / "setup.sh").read_text(encoding="utf-8")
-        self.assertIn('[ "$(uname -s)" = Darwin ]', sh)
-        self.assertIn("83dcb04777c798bd95f3687acf9ae84b09860272ee6bdfb05be8bcf9447f75b8", sh)
+        self.assertIn("Darwin-arm64) PBS_ARCH=aarch64-apple-darwin; PBS_SUM=", sh)
 
 
 class RepackGuard(unittest.TestCase):

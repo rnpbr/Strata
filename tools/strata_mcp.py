@@ -2021,8 +2021,8 @@ class Tools:
         models, families, contexts, _src = s.tables()
         if gpu is not None and gpus is not None:
             raise ToolError("give gpu (one card) or gpus (several), not both")
-        if sys.version_info < (3, 10) or (WIN and sys.maxsize <= 2**32):
-            raise ToolError("this Python is too old or 32-bit: Strata's setup needs 64-bit Python 3.10+; run "
+        if sys.version_info < (3, 11) or (WIN and sys.maxsize <= 2**32):
+            raise ToolError("this Python is too old or 32-bit: Strata's setup needs 64-bit Python 3.11+; run "
                             + ("START-HERE.bat" if WIN else "./setup.sh") + " once instead (it installs Python)")
         hw = s.hardware()
         rec = s.recommend(hw)
@@ -2570,8 +2570,8 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
     if a.install_job:
         return install_job(a.install_job)
-    if sys.version_info < (3, 10):
-        log("Python 3.10 or newer is needed")
+    if sys.version_info < (3, 11):
+        log("Python 3.11 or newer is needed")
         return 2
     root = Path(a.root).expanduser().resolve() if a.root else DEFAULT_ROOT
     src = Path(a.src).expanduser().resolve() if a.src else root

@@ -84,7 +84,7 @@ Linux targets were added**, so the added targets do not affect the macOS artifac
 The installer carries two things that start a model, and neither fetches anything when it runs.
 
 **Control** (`<install>/control`, built by `apps/desktop/scripts/stage-control.py`): the same bundle as the Terminal
-archive, the pinned CPython 3.12.15, the hash-locked wheels, `strata_control`, `strata_cli` and `serve`, plus a
+archive, the pinned CPython 3.14.9, the hash-locked wheels, `strata_control`, `strata_cli` and `serve`, plus a
 `BUNDLE.json` with the interpreter and lock digests. The host finds it beside itself (or through `STRATA_CONTROL_DIR`),
 runs it on its own interpreter (`PYTHONNOUSERSITE=1`, no `PYTHONHOME`/`PYTHONPATH`) and starts a model with
 `strata profile create|use-config` + `strata runtime start`, so the engine runs under the owner runtime (loopback TCP and a
@@ -143,8 +143,8 @@ user chooses to download are a separate, explicit action. `apps/host/tests/no-ac
   for redistribution.
 * The terminal distribution bundles a private Python runtime and its dependencies for `windows-x86_64`,
   `linux-x86_64` and `darwin-arm64` (`package_terminal.py --target ...`, built on the target OS). The interpreter is
-  the pinned python-build-standalone CPython 3.12.15 (digest-checked at build time); the packages come from
-  `packaging/locks/runtime-<target>-cp312.txt`, installed with `pip install --require-hashes --no-deps
+  the pinned python-build-standalone CPython 3.14.9 (digest-checked at build time); the packages come from
+  `packaging/locks/runtime-<target>-cp314.txt`, installed with `pip install --require-hashes --no-deps
   --only-binary=:all:` at BUILD time only (`lock_wheels.py` makes the lock; review its diff when a pin changes).
   Wrappers: `bin/strata.cmd` / `bin/strata.ps1` on Windows, `bin/strata` on POSIX; START-HERE.bat, SETUP.bat,
   UPDATE.bat, setup.sh and update.sh use a `python/` folder beside them when there is one.

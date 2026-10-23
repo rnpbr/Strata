@@ -6,8 +6,8 @@
     python apps/desktop/scripts/stage-control.py --wheelhouse DIR      # build with no network (wheels from DIR)
     python apps/desktop/scripts/stage-control.py --check               # verify what is staged
 
-What lands in `control/`: the pinned CPython 3.12.15 (python-build-standalone, digest-checked), the hash-locked wheels
-(`packaging/locks/runtime-<target>-cp312.txt`, installed with --require-hashes at build time), strata_control,
+What lands in `control/`: the pinned CPython 3.14.9 (python-build-standalone, digest-checked), the hash-locked wheels
+(`packaging/locks/runtime-<target>-cp314.txt`, installed with --require-hashes at build time), strata_control,
 strata_cli, serve, tools/strata_tokenizer.py + gguf_reader.py, and BUNDLE.json (version, interpreter and lock digests,
 the digest of the archive it came from). It is the same bundle as the Terminal archive (packaging/package_terminal.py):
 one Python runtime-core for both products. The app then never runs pip, npm, git or a compiler to start or serve.

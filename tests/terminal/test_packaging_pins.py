@@ -29,10 +29,16 @@ class InterpreterPins(unittest.TestCase):
                 self.assertTrue(pin["url"].endswith("install_only.tar.gz"))
         self.assertEqual(len({p["sha256"] for p in pt.PYTHON_PINS.values()}), 4)
 
-    def test_the_mac_pin_is_the_one_setup_sh_downloads(self):
+    def test_setup_sh_downloads_the_pinned_interpreters(self):
+        """setup.sh's standalone Python (no usable system one) is the Terminal archive's, URL and digest alike."""
         text = (ROOT / "setup.sh").read_text(encoding="utf-8")
-        self.assertIn(pt.PYTHON_PINS["darwin-arm64"]["sha256"], text)
-        self.assertIn(pt.PYTHON_PINS["darwin-arm64"]["url"].split("/")[-1], text)
+        url = re.search(r'PBS="([^"]+)"', text).group(1)
+        for arch, target in (("aarch64-apple-darwin", "darwin-arm64"), ("aarch64-unknown-linux-gnu", "linux-arm64"),
+                             ("x86_64-unknown-linux-gnu", "linux-x86_64")):
+            with self.subTest(target):
+                pin = pt.PYTHON_PINS[target]
+                self.assertEqual(url.replace("$PBS_ARCH", arch), pin["url"])
+                self.assertRegex(text, rf"PBS_ARCH={re.escape(arch)}; PBS_SUM={pin['sha256']} ;;")
 
     def test_fetch_refuses_a_download_that_does_not_match_its_pin(self):
         with tempfile.TemporaryDirectory() as d:
@@ -46,9 +52,9 @@ class InterpreterPins(unittest.TestCase):
 
 class WheelLocks(unittest.TestCase):
     def locks(self):
-        found = sorted((ROOT / "packaging" / "locks").glob("runtime-*-cp312.txt"))
-        self.assertEqual([p.name for p in found], ["runtime-darwin-arm64-cp312.txt", "runtime-linux-arm64-cp312.txt",
-                                                    "runtime-linux-x86_64-cp312.txt", "runtime-windows-x86_64-cp312.txt"])
+        found = sorted((ROOT / "packaging" / "locks").glob("runtime-*-cp*.txt"))
+        self.assertEqual([p.name for p in found], ["runtime-darwin-arm64-cp314.txt", "runtime-linux-arm64-cp314.txt",
+                                                    "runtime-linux-x86_64-cp314.txt", "runtime-windows-x86_64-cp314.txt"])
         return found
 
     def test_every_entry_is_pinned_and_hashed_and_nothing_else_is_in_the_file(self):
@@ -85,8 +91,8 @@ class WheelLocks(unittest.TestCase):
                     if pkg == "colorama":
                         self.assertEqual(pkg in names, "windows" in lock.name)
                         continue
-                    if pkg == "numpy":                       # python_version markers: the 3.12 line applies
-                        self.assertEqual(names[pkg], "2.5.3")
+                    if pkg == "numpy":                       # python_version markers: the >= 3.12 line applies
+                        self.assertEqual(names[pkg], next(v for v, m in versions if m == 'python_version >= "3.12"'))
                         continue
                     self.assertEqual(names.get(pkg), versions[0][0], pkg)
                 self.assertNotIn("cmake", names)             # build tools never ship in the bundle

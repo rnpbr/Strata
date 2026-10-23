@@ -31,7 +31,7 @@ Branch `jetson-arm64`, based on Strata 0.2.2 (engine 0.1.47). For desktop GPUs, 
 ## Install
 
 ```sh
-sudo apt install -y git build-essential python3-venv
+sudo apt install -y git build-essential
 git clone -b jetson-arm64 https://github.com/rnpbr/Strata.git
 cd Strata
 ./setup.sh --model Q2_0 --data-dir /data/strata --yes

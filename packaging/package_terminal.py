@@ -8,10 +8,10 @@ the `strata` launchers prefer them.
 
 What goes in
 ------------
-* a pinned **standalone CPython 3.12.15** (python-build-standalone 20261009, `install_only`), downloaded at BUILD
+* a pinned **standalone CPython 3.14.9** (python-build-standalone 20261021, `install_only`), downloaded at BUILD
   time and SHA-256-verified against the pin below (the digests are the ones in that release's SHA256SUMS, the Mac one
   is also what `setup.sh` pins), so the terminal and the installer cannot drift apart;
-* the runtime wheels from the target's lock, `packaging/locks/runtime-<target>-cp312.txt` (made by
+* the runtime wheels from the target's lock, `packaging/locks/runtime-<target>-cp314.txt` (made by
   `packaging/lock_wheels.py`), installed into that interpreter with
   `pip install --require-hashes --no-deps --only-binary=:all:` at BUILD time only: every package, direct or
   transitive, is named with an exact version and the SHA-256 of the wheel(s) accepted, so nothing else can land in
@@ -59,8 +59,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 LOCKS = ROOT / "packaging" / "locks"
 
-PBS_RELEASE = "20261009"
-PYTHON_VERSION = "3.12.15"
+PBS_RELEASE = "20261021"
+PYTHON_VERSION = "3.14.9"
 PBS_BASE = f"https://github.com/astral-sh/python-build-standalone/releases/download/{PBS_RELEASE}/"
 
 #: The standalone CPython pins, one per target, from the release's SHA256SUMS. `darwin-arm64` is also what
@@ -68,22 +68,22 @@ PBS_BASE = f"https://github.com/astral-sh/python-build-standalone/releases/downl
 PYTHON_PINS = {
     "windows-x86_64": {
         "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-x86_64-pc-windows-msvc-install_only.tar.gz",
-        "sha256": "194c8f0d9e0de6f1c4576e5dfa67819a48c764be87608b74b8ad43387a57b93b",
+        "sha256": "60739023ce2d9dee1dfde665c73bc61735cd8ecc5e0277345f1dc0ba6c0fc9ba",
         "python": "python/python.exe", "archive": "zip",
     },
     "linux-x86_64": {
         "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-x86_64-unknown-linux-gnu-install_only.tar.gz",
-        "sha256": "5864001bf969db329fadc2b654c4878c6027d170c6bd77e28f88666260bcaf63",
+        "sha256": "dfa4c5a40c47f338f41658017be550c72247c391e6bfb1fa4da03ebc8451abdf",
         "python": "python/bin/python3", "archive": "tar.gz",
     },
     "linux-arm64": {
         "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-aarch64-unknown-linux-gnu-install_only.tar.gz",
-        "sha256": "b342ccfb577fda349d0237c98b24848234ca767c10f034628a5ff9fc858d662f",
+        "sha256": "847895ba727440b012207bb0192282d7e182eb991ae5c7bb5c35c6a12a99e732",
         "python": "python/bin/python3", "archive": "tar.gz",
     },
     "darwin-arm64": {
         "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-aarch64-apple-darwin-install_only.tar.gz",
-        "sha256": "83dcb04777c798bd95f3687acf9ae84b09860272ee6bdfb05be8bcf9447f75b8",
+        "sha256": "226d696642a8a53d03b4d5b255b1c319b1575a6d44bd723a953c9f507755e36a",
         "python": "python/bin/python3", "archive": "tar.gz",
     },
 }
@@ -172,7 +172,7 @@ def ignore(_directory: str, names: list[str]) -> set[str]:
 
 
 def lock_for(target: str) -> Path:
-    path = LOCKS / f"runtime-{target}-cp312.txt"
+    path = LOCKS / f"runtime-{target}-cp{''.join(PYTHON_VERSION.split('.')[:2])}.txt"
     if not path.is_file():
         raise SystemExit(f"no lock for {target}: {path} (run packaging/lock_wheels.py --target {target})")
     return path

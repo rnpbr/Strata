@@ -1,7 +1,8 @@
 #!/bin/sh
 # Strata for Linux: the first run installs everything and starts the model; later runs just start it.
 # Needs only an NVIDIA driver (or, for an AMD Radeon card, the kernel's amdgpu driver: see docs/AMD_HIP.md).
-# Python (with venv) is installed through apt/dnf if it is missing (asks for sudo).
+# Python: on macOS and 64-bit Linux a pinned standalone CPython (the Terminal archive's) goes into .python, so every PC
+# runs the same, current interpreter with no sudo and nothing installed system-wide; elsewhere a system Python 3.11+.
 # NixOS (or STRATA_UV=1) with uv installed: uv makes the project venv; every other Linux uses the standard venv.
 cd "$(dirname "$0")" || exit 1
 # A bundled Python runtime (the python/ folder of the terminal archive) is used when it is there: nothing to find,
@@ -11,59 +12,72 @@ if [ -x python/bin/python3 ]; then
   unset PYTHONHOME PYTHONPATH
   exec python/bin/python3 setup.py "$@"
 fi
-# Python 3.10+ that can make a venv WITH pip: Debian/Ubuntu ship `venv` without `ensurepip` (that is the separate
+# python-build-standalone 20261021, CPython 3.14.9: the files packaging/package_terminal.py pins
+PBS_VERSION=3.14.9
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) PBS_ARCH=aarch64-apple-darwin; PBS_SUM=226d696642a8a53d03b4d5b255b1c319b1575a6d44bd723a953c9f507755e36a ;;
+  Linux-aarch64) PBS_ARCH=aarch64-unknown-linux-gnu; PBS_SUM=847895ba727440b012207bb0192282d7e182eb991ae5c7bb5c35c6a12a99e732 ;;
+  Linux-x86_64) PBS_ARCH=x86_64-unknown-linux-gnu; PBS_SUM=dfa4c5a40c47f338f41658017be550c72247c391e6bfb1fa4da03ebc8451abdf ;;
+  *) PBS_ARCH="" ;;
+esac
+PBS="https://github.com/astral-sh/python-build-standalone/releases/download/20261021/cpython-3.14.9%2B20261021-$PBS_ARCH-install_only.tar.gz"
+# Python 3.11+ that can make a venv WITH pip: Debian/Ubuntu ship `venv` without `ensurepip` (that is the separate
 # python3-venv package), and a venv made without it has no pip
-ok_py() { "$1" -c 'import sys, venv, ensurepip; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; }
-# a .venv from an earlier run that failed half-way has a python but no pip: start it again
-if [ -x .venv/bin/python ] && ! .venv/bin/python -m pip --version >/dev/null 2>&1; then
-  rm -rf .venv
+ok_py() { "$1" -c 'import sys, venv, ensurepip; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; }
+# uv's own Python only on NixOS (its Python cannot load pip wheels' libraries), or when asked: STRATA_UV=1.
+# Everywhere else the standard venv stays the default (#662: a silent toolchain change was not wanted).
+UV=""
+if [ "${STRATA_UV:-}" = "1" ] || grep -qi '^ID=nixos' /etc/os-release 2>/dev/null; then
+  UV="$(command -v uv 2>/dev/null || true)"
+fi
+# The .venv is made again when it is half-made (no pip), too old (Pillow 13 needs 3.11) or not on the pinned interpreter
+# (an earlier setup's): never while a Strata server of this user runs (serve/server.py, or -m serve.server as the
+# Terminal starts it; any folder's, to be safe) - then on a later run, once it is stopped.
+if [ -x .venv/bin/python ]; then
+  STALE=""
+  if ! .venv/bin/python -m pip --version >/dev/null 2>&1 ||
+     ! .venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+    STALE=1
+  elif [ -n "$PBS_ARCH" ] && [ -z "$UV" ] &&
+       [ "$(sed -n -e 's/^version = //p' -e 's/^version_info = //p' .venv/pyvenv.cfg 2>/dev/null | head -1)" != "$PBS_VERSION" ]; then
+    STALE=1
+  fi
+  if [ -n "$STALE" ] && ! pgrep -u "$(id -u)" -f 'serve[/.]server' >/dev/null 2>&1; then
+    rm -rf .venv
+  fi
 fi
 if [ ! -x .venv/bin/python ]; then
-  # uv's own Python only on NixOS (its Python cannot load pip wheels' libraries), or when asked: STRATA_UV=1.
-  # Everywhere else the standard venv stays the default (#662: a silent toolchain change was not wanted).
-  UV=""
-  if [ "${STRATA_UV:-}" = "1" ] || grep -qi '^ID=nixos' /etc/os-release 2>/dev/null; then
-    UV="$(command -v uv 2>/dev/null || true)"
-  fi
   PY=""
   if [ -n "$UV" ]; then
     # Prefer uv's own interpreter: unlike Nix's Python, it works naturally with pip wheels using dlopen.
-    PY=3.12
-  else
+    PY=3.14
+  elif [ -n "$PBS_ARCH" ]; then
+    if [ "$(cat .python/SHA256 2>/dev/null)" != "$PBS_SUM" ] || ! ok_py .python/python/bin/python3; then
+      echo "Downloading the pinned Python $PBS_VERSION into .python (about 30 MB, once) ..."
+      rm -rf .python && mkdir -p .python
+      if curl -fL --retry 3 -o .python/python.tar.gz "$PBS"; then
+        SUM="$( (sha256sum .python/python.tar.gz 2>/dev/null || shasum -a 256 .python/python.tar.gz) | cut -d" " -f1)"
+        if [ "$SUM" != "$PBS_SUM" ]; then
+          rm -rf .python; echo "the Python download does not match its pinned SHA-256"; exit 1
+        fi
+        tar xzf .python/python.tar.gz -C .python && rm -f .python/python.tar.gz && echo "$PBS_SUM" > .python/SHA256
+      else
+        rm -rf .python; echo "could not download Python: trying this system's own"
+      fi
+    fi
+    ok_py .python/python/bin/python3 && PY=.python/python/bin/python3
+  fi
+  if [ -z "$PY" ]; then
     for c in python3 python; do
       if command -v $c >/dev/null 2>&1 && ok_py $c; then
         PY=$c; break
       fi
     done
   fi
-  # macOS: the system Python is 3.9; a standalone Python 3.12 goes into .python (no sudo, no Homebrew; pinned)
-  if [ -z "$PY" ] && [ "$(uname -s)" = Darwin ]; then
-    if [ ! -x .python/python/bin/python3 ]; then
-      PBS="https://github.com/astral-sh/python-build-standalone/releases/download/20261009/cpython-3.12.15%2B20261009-aarch64-apple-darwin-install_only.tar.gz"
-      echo "Python 3.10+ is needed; downloading a standalone Python 3.12 into .python (25 MB) ..."
-      mkdir -p .python && curl -fL --retry 3 -o .python/python.tar.gz "$PBS" || { echo "could not download Python"; exit 1; }
-      if [ "$(shasum -a 256 .python/python.tar.gz | cut -d" " -f1)" != "83dcb04777c798bd95f3687acf9ae84b09860272ee6bdfb05be8bcf9447f75b8" ]; then
-        rm -f .python/python.tar.gz; echo "the Python download does not match its pinned SHA-256"; exit 1
-      fi
-      tar xzf .python/python.tar.gz -C .python && rm -f .python/python.tar.gz
-    fi
-    PY=.python/python/bin/python3
-  fi
   if [ -z "$PY" ]; then
-    echo "Python 3.10+ with venv is needed; installing it (sudo will ask for your password) ..."
-    if command -v apt-get >/dev/null 2>&1; then
-      sudo apt-get update && sudo apt-get install -y python3 python3-venv python3-pip
-    elif command -v dnf >/dev/null 2>&1; then
-      sudo dnf install -y python3 python3-pip
-    elif command -v pacman >/dev/null 2>&1; then
-      sudo pacman -S --noconfirm python python-pip
-    fi
-    PY=python3
-    if ! ok_py $PY; then
-      echo "Please install Python 3.10 or newer with venv (Ubuntu/Debian: sudo apt install python3-venv), then run"
-      echo "./setup.sh again. On NixOS, add uv to environment.systemPackages."
-      exit 1
-    fi
+    echo "Please install Python 3.11 or newer with venv (Ubuntu/Debian: sudo apt install python3-venv), then run"
+    echo "./setup.sh again. On NixOS, add uv to environment.systemPackages."
+    exit 1
   fi
   if [ -n "$UV" ]; then
     # Force an uv-managed interpreter: pip wheels may dlopen libraries outside the Nix store.

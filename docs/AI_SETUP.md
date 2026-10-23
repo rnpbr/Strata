@@ -250,9 +250,9 @@ lower case: `run-iq2_xs`, `run-swift-iq2_xs`, `run-coder-iq1_m`, `run-unsloth-ud
 `strata-<model>.log` in the Strata folder. Then continue with step 7.
 
 Notes:
-- **Linux:** setup uses `sudo apt` (or dnf/pacman) to install Python with venv if it is missing, and on AMD may need
+- **Linux:** setup brings its own pinned Python (CPython 3.14.9 in `.python`, no sudo); a compile may need
   `build-essential` and `git`. You cannot type the user's password: if a `sudo` step is needed, ask the user to run it
-  (e.g. `sudo apt install python3-venv build-essential git`) and then rerun setup.
+  (e.g. `sudo apt install build-essential git`) and then rerun setup.
 - **AMD on Linux:** setup installs ROCm into `.venv` (~10 GB, no sudo) unless a system ROCm 7 exists, and compiles the
   engine for the card (10-20 minutes, once).
 - **AMD on Windows:** setup downloads the ready-made AMD engine (~550 MB, ROCm included) - nothing is compiled and only
