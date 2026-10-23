@@ -7,6 +7,7 @@ const SPRITE = "web/sprite.svg";
 const icon = (name, cls = "st-icon") => `<svg class="${cls}" aria-hidden="true"><use href="${SPRITE}#i-${name}"/></svg>`;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toLocaleString(undefined, {maximumFractionDigits: d, minimumFractionDigits: d}));
+const count = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;     // "1 token", "2 tokens"
 const kfmt = (n) => (n == null ? "–" : n >= 1000 ? `${fmt(n / 1000, n >= 10000 ? 0 : 1)}k` : fmt(n));
 // a context size: 32768 -> "32K" (powers of two), else like kfmt
 const ctxfmt = (n) => (n && n % 1024 === 0 ? `${fmt(n / 1024)}K` : kfmt(n));
@@ -317,12 +318,12 @@ function renderConvCache(c) {
     $("cc-mem-text").textContent = `${gb(c.bytes)} / ${gb(budget)} GB`;
     $("cc-mem-bar").style.width = pct(c.bytes, budget);
   }
-  $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${fmt(c.requests)} requests reused part of their prompt` : "";
+  $("cc-sum").textContent = c.requests ? `${fmt(c.requests_reused)} of ${count(c.requests, "request")} reused part of their prompt` : "";
   const share = c.prompt_tokens ? ` (${fmt((100 * c.reused_tokens) / c.prompt_tokens)}% of all prompt tokens)` : "";
-  const event = c.last_event ? `${c.last_event === "parked" ? "Parked" : "Restored"} ${fmt(c.last_tokens)} tokens, ${since(c.last_at)}` : null;
+  const event = c.last_event ? `${c.last_event === "parked" ? "Parked" : "Restored"} ${count(c.last_tokens, "token")}, ${since(c.last_at)}` : null;
   facts($("cc-facts"), [
-    ["Last request", c.last_prompt != null ? `${fmt(c.last_reused || 0)} of ${fmt(c.last_prompt)} prompt tokens reused` : null],
-    ["Reused since start", c.requests ? `${fmt(c.reused_tokens)} tokens${share}` : null],
+    ["Last request", c.last_prompt != null ? `${fmt(c.last_reused || 0)} of ${count(c.last_prompt, "prompt token")} reused` : null],
+    ["Reused since start", c.requests ? `${count(c.reused_tokens, "token")}${share}` : null],
     ["Parked / restored", c.enabled ? `${fmt(c.parks)} / ${fmt(c.restores)}${c.evictions ? ` · ${fmt(c.evictions)} evicted` : ""}` : null],
     ["Last switch", c.enabled ? event : null],
   ]);
@@ -337,7 +338,7 @@ function renderTotals(t) {
   const read = t.prompt_tokens - t.reused;
   const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
   const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
-  return `Since ${since}: ${fmt(t.requests)} request${t.requests === 1 ? "" : "s"} · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
+  return `Since ${since}: ${count(t.requests, "request")} · ${count(read, "prompt token")} read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
@@ -357,16 +358,16 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       pct = (100 * live.prompt_read) / live.prompt_total;
       detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
     } else {
-      detail = `${fmt(live.prompt_tokens)} tokens`;
+      detail = count(live.prompt_tokens, "token");
     }
   } else if (live.state === "generating") {
     label = live.phase ? live.phase[0].toUpperCase() + live.phase.slice(1) : "Generating";
     delete prog.dataset.tone;
     pct = live.max_tokens ? Math.min(100, (100 * live.generated) / live.max_tokens) : 0;
-    detail = `${fmt(live.generated)} tokens · ${fmt(live.tok_s, 1)} tok/s`;
+    detail = `${count(live.generated, "token")} · ${fmt(live.tok_s, 1)} tok/s`;
   } else if (last) {
     delete prog.dataset.tone;
-    detail = `last: ${fmt(last.output_tokens)} tokens${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
+    detail = `last: ${count(last.output_tokens, "token")}${last.decode_tok_s ? ` at ${fmt(last.decode_tok_s, 1)} tok/s` : ""}`;
   }
   $("state-label").textContent = label;
   $("state-detail").textContent = detail;
@@ -526,7 +527,7 @@ function renderAbout(eng, hw, st) {
     eng.uma_pinned_mib
       ? ["Experts", `${fmt(eng.expert_slots)}, read in place by the GPU (${gb(eng.uma_pinned_mib * 1048576)} GB registered, nothing copied)`]
       : ["Experts in VRAM", eng.expert_slots ? `${fmt(eng.expert_slots)} (${gb((eng.expert_cache_mib || 0) * 1048576)} GB)` : null],
-    ["Speculation", eng.spec ? `MTP drafts up to ${Math.max(0, (eng.mtp_max || eng.spec) - 1)} tokens${eng.lookup ? ", prompt lookup on" : ""}` : null],
+    ["Speculation", eng.spec ? `MTP drafts up to ${count(Math.max(0, (eng.mtp_max || eng.spec) - 1), "token")}${eng.lookup ? ", prompt lookup on" : ""}` : null],
     ["Images", eng.images ? "on" : "off"],
     ["Experimental speed projection", projectionText(eng.cvec)],
   ]);
@@ -578,14 +579,14 @@ function renderMcp() {
   $("mcp-card").hidden = !servers.length;
   $("mcp-row").hidden = !servers.length;
   const ready = servers.filter((s) => s.status === "ready" || s.status === "stopped");
-  $("mcp-sum").textContent = servers.length ? `${fmt(mcpInfo.tools)} tools · ${ready.length} of ${servers.length} servers connected` : "";
-  $("mcp-row-sub").textContent = mcpInfo.tools ? `${fmt(mcpInfo.tools)} tools from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
+  $("mcp-sum").textContent = servers.length ? `${count(mcpInfo.tools, "tool")} · ${ready.length} of ${count(servers.length, "server")} connected` : "";
+  $("mcp-row-sub").textContent = mcpInfo.tools ? `${count(mcpInfo.tools, "tool")} from ${ready.map((s) => s.name).join(", ")}; the model calls them when it decides to`
                                                : "no server is connected yet (see the Monitor)";
   $("mcp-list").innerHTML = servers.map((s) => {
     const [cls, text] = MCP_STATE[s.status] || ["", s.status];
     const info = s.info && s.info.name ? ` · ${s.info.name}${s.info.version ? ` ${s.info.version}` : ""}` : "";
     return `<div class="mcp-server"><div class="mcp-server__head"><span class="st-badge ${cls}">${esc(text)}</span>` +
-      `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} · ${fmt(s.tools.length)} tools${esc(info)}</span></div>` +
+      `<strong>${esc(s.name)}</strong><span class="muted small">${esc(s.transport)} · ${count(s.tools.length, "tool")}${esc(info)}</span></div>` +
       (s.error ? `<div class="msg-error">${esc(s.error)}</div>` : "") +
       (s.tools.length ? `<div class="mcp-server__tools">${s.tools.map((t) => `<span class="chip" title="${esc(t.description || "")}">${esc(t.tool)}</span>`).join("")}</div>` : "") +
       `</div>`;
@@ -1045,7 +1046,7 @@ async function send() {
                                                              : (performance.now() - firstAt) / 1000;
     // a board that measures its own power (a Jetson): the server's mean watts over this answer, and tokens per joule
     const energy = timings && timings.power_w ? ` · ${fmt(timings.power_w)} W · ${fmt(timings.tok_per_j, 2)} tok/J` : "";
-    m.meta = `${fmt(n)} tokens${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${energy}${m.stopped ? " · stopped" : ""}` +
+    m.meta = `${count(n, "token")}${secs > 0.25 ? ` · ${fmt(n / secs, 1)} tok/s` : ""}${energy}${m.stopped ? " · stopped" : ""}` +
              (projectionLoaded() ? (settings.esp ? " · projection on" : " · projection off") : "");
   } else if (m.stopped) {
     m.meta = "Stopped";
