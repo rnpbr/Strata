@@ -54,6 +54,15 @@ void quiet_log(ggml_log_level level, const char* text, void*) {
     if (level >= GGML_LOG_LEVEL_WARN) std::fputs(text, stderr);
 }
 
+// a GPU among ggml's devices: with --gpu and none, mtmd would quietly read pictures on the CPU
+bool have_gpu_device() {
+    for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
+        const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
+        if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) return true;
+    }
+    return false;
+}
+
 // "ENC <image> <out>": paths may contain spaces, so the image path ends at the last " " before the output path;
 // the server always writes paths without spaces, but a user calling the tool by hand might not
 bool parse_enc(const std::string& line, std::string& img, std::string& out) {
@@ -151,12 +160,7 @@ int main(int argc, char** argv) {
         // The AMD / Intel GPU reader: starting the backends prints the GPU line.  With --gpu and no GPU, mtmd would quietly use the CPU
         // (a second, slower CPU reader inside the HIP program), and a card the build has no code for would abort at its first
         // kernel.  Both end here with a line the server reads: it then starts the CPU reader (serve/server.py, Vision._start).
-        bool have_gpu = false;
-        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
-            const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
-            have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
-        }
-        if (!have_gpu) {
+        if (!have_gpu_device()) {
             std::printf("ERR this picture reader found no GPU (it was built for: %s)\n", STRATA_VISION_BUILT_FOR);
             std::fflush(stdout);
             return 3;
@@ -178,16 +182,24 @@ int main(int argc, char** argv) {
         // The Mac: the same program reads on the GPU (--gpu, ggml's Metal backend) or on the CPU.  With --gpu and no Metal device (a
         // virtual machine without a GPU, say), mtmd would quietly use the CPU, which reads a picture in ~50 s: say so instead, and
         // the server starts the program again without --gpu (serve/server.py, Vision._start) with one log line.
-        bool have_gpu = false;
-        for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
-            const auto type = ggml_backend_dev_type(ggml_backend_dev_get(i));
-            have_gpu = have_gpu || type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU;
-        }
-        if (!have_gpu) {
+        if (!have_gpu_device()) {
             std::printf("ERR this Mac has no Metal GPU for the picture reader\n");
             std::fflush(stdout);
             return 3;
         }
+    }
+#endif
+#if !defined(STRATA_VISION_HIP) && !defined(STRATA_VISION_SYCL) && !defined(STRATA_VISION_METAL)
+    if (gpu && !have_gpu_device()) {
+        // A CUDA reader that finds no card, or a reader built for the CPU only: mtmd would read on the CPU, and the warm-up
+        // at 1,024 image tokens below then took minutes, past the server's start timeout, without a word.  Say why at once.
+#ifdef STRATA_VISION_CUDA
+        std::printf("ERR this picture reader found no CUDA GPU\n");
+#else
+        std::printf("ERR this picture reader was built for the CPU only: start it without --gpu, or run setup again\n");
+#endif
+        std::fflush(stdout);
+        return 3;
     }
 #endif
 
