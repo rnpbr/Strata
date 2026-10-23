@@ -41,7 +41,9 @@ class UpdaterCase(unittest.TestCase):
         env = mock.patch.dict(os.environ, {
             "STRATA_PROFILE_DIR": str(self.root / "profiles"), "STRATA_RUNTIME_DIR": str(self.root / "runtime"),
             "STRATA_COMPONENTS_DIR": str(self.components), "STRATA_ENGINE_BACKEND": "cuda",
-            "FAKE_ENGINE_MARK": str(self.root / "ran.txt")})
+            "FAKE_ENGINE_MARK": str(self.root / "ran.txt"),
+            # launch records and re-check marks the code writes to the user's state folder stay in this test's folder
+            "XDG_STATE_HOME": str(self.root / "user-state"), "LOCALAPPDATA": str(self.root / "user-state")})
         env.start()
         self.addCleanup(env.stop)
         for target, value in ((ec, "cuda_archs_present"), (ec, "nvidia_driver_version")):
